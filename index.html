@@ -85,6 +85,12 @@
     <input type="range" id="scrub" min="0" max="0" value="0" disabled title="Scrub through the selected period">
     <label title="Keep the boat in view during replay"><input type="checkbox" id="follow"> Follow</label>
   </span>
+  <span class="group" title="Hide the track before the start and after the finish. Times are in the selected time zone.">
+    <label><input type="checkbox" id="raceOn" disabled> Race only</label>
+    <input type="time" id="raceStart" step="1" disabled aria-label="Race start time">
+    <span>–</span>
+    <input type="time" id="raceEnd" step="1" disabled aria-label="Race end time">
+  </span>
   <span class="group">
     <label title="Time window used to compute SOG and COG from the GPS fixes">Smoothing
       <select id="smooth">
@@ -123,6 +129,7 @@
 
     <h2>How to use</h2>
     <ul>
+      <li>Set the race start and end times in the toolbar to leave out the sail to and from the start. Untick <b>Race only</b> to see the whole track again.</li>
       <li>Hover the track or the charts to read time, speed and course at that moment.</li>
       <li>Drag across a chart to select a period. The map highlights it, Periods adds a Selection column, and Play replays only that period. Double-click a chart to reset.</li>
       <li>Pin a selection to keep it as a column, for example the outbound and return legs. Click a pinned column's heading to select that period again.</li>
@@ -247,6 +254,12 @@ function buildTrack(parsed, fileName) {
     if (i) cum[i] = cum[i - 1] + distM(lat[i - 1], lon[i - 1], lat[i], lon[i]);
   });
   return { name: parsed.name || fileName || 'Track', n, t, lat, lon, cum };
+}
+
+// Fixes [a, b) of a track. Views share the parent's arrays; cumulative distance is only ever differenced.
+function sliceTrack(tr, a, b) {
+  return { name: tr.name, n: b - a, t: tr.t.subarray(a, b), lat: tr.lat.subarray(a, b), lon: tr.lon.subarray(a, b),
+    cum: tr.cum.subarray(a, b) };
 }
 
 function analyse(tr, smoothS) {
@@ -383,10 +396,12 @@ function legStats(i0, i1) {
 // ---------- state ----------
 
 const settings = { smoothS: 20, tz: loadTz() };
-let track = null;      // parsed track: t, lat, lon, cum (metres)
+let track = null;      // the fixes being analysed: the whole track, or only the race window
+let fullTrack = null;  // every fix in the file
+let race = null;       // { on, t0, t1 }: race window in seconds, used when `on`
 let an = null;         // analysis for the current smoothing
 let sel = null;        // [i0, i1] selected by zooming a chart, or null for the whole track
-let pins = [];         // [i0, i1] periods kept for comparison
+let pins = [];         // [t0, t1] periods kept for comparison, in seconds
 let cur = 0;           // index of the fix under the cursor / replay position
 let charts = [];
 let building = false;
@@ -506,8 +521,9 @@ function drawPoints() {
     dot(tn.i, '#fff', 4, `${fmtTime(tn.t)} · ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'} · ${fmtDur(tn.lossS)} lost`)
       .on('click', () => zoomToTurn(tn));
   });
-  dot(0, '#2e7d32', 6, `Start of track · ${fmtTime(t[0])}`);
-  dot(n - 1, '#c62828', 6, `End of track · ${fmtTime(t[n - 1])}`);
+  const [first, last] = track === fullTrack ? ['Start of track', 'End of track'] : ['Race start', 'Race end'];
+  dot(0, '#2e7d32', 6, `${first} · ${fmtTime(t[0])}`);
+  dot(n - 1, '#c62828', 6, `${last} · ${fmtTime(t[n - 1])}`);
 }
 
 function drawSelection() {
@@ -677,8 +693,12 @@ new ResizeObserver(() => {
 function renderStats() {
   const { t, n } = track;
   // Columns: whole track, pinned periods in time order, then the live selection.
-  const cols = [{ label: 'Whole', i0: 0, i1: n - 1 }];
-  [...pins].sort((p, q) => p[0] - q[0]).forEach((p, k) => cols.push({ label: `#${k + 1}`, i0: p[0], i1: p[1], pin: p }));
+  // Pins are kept as times, so they survive a change of race window; skip any now outside it.
+  const cols = [{ label: track === fullTrack ? 'Whole' : 'Race', i0: 0, i1: n - 1 }];
+  [...pins].sort((p, q) => p[0] - q[0]).forEach(p => {
+    const i0 = lowerBound(t, p[0]), i1 = upperBound(t, p[1]) - 1;
+    if (i1 > i0) cols.push({ label: `#${cols.length}`, i0, i1, pin: p });
+  });
   if (sel) cols.push({ label: 'Selection', i0: sel[0], i1: sel[1], isSel: true });
   const S = cols.map(c => legStats(c.i0, c.i1));
   const rows = [
@@ -804,6 +824,8 @@ function recompute() {
   stopPlay();
   an = analyse(track, settings.smoothS);
   $('trackName').textContent = `${track.name} · ${fmtDate(track.t[0])}`;
+  $('raceStart').value = fmtTime(race.t0);
+  $('raceEnd').value = fmtTime(race.t1);
   drawTrack();
   drawPoints();
   updateLegend();
@@ -812,16 +834,65 @@ function recompute() {
   setCurrent(clamp(cur, 0, track.n - 1), 'recompute');
 }
 
+// ---------- race window ----------
+
+// Offset of the selected time zone from UTC at a moment, in ms.
+function tzOffsetMs(ms) {
+  const p = Object.fromEntries(dtf({ year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    second: '2-digit' }).formatToParts(ms).map(x => [x.type, x.value]));
+  return Date.UTC(+p.year, p.month - 1, +p.day, p.hour % 24, +p.minute, +p.second) - ms;
+}
+
+// A clock time on the calendar day of `ts` (in the selected time zone) as Unix seconds; `days` moves the day.
+function clockOnDayOf(ts, hms, days = 0) {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(hms.trim());
+  if (!m) return null;
+  const off = tzOffsetMs(ts * 1000), local = new Date(ts * 1000 + off);
+  const guess = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + days, +m[1], +m[2], +(m[3] || 0));
+  // Second pass corrects the offset when the guess lands on the other side of a DST change.
+  return (guess - tzOffsetMs(guess - tzOffsetMs(guess))) / 1000;
+}
+
+// Start is on the day the track starts, unless that is long before the first fix (a track started late in
+// the evening for a race after midnight). End is the first such time after the start, so 00:04 is next day.
+function setRaceFromBoxes() {
+  const first = fullTrack.t[0];
+  let t0 = clockOnDayOf(first, $('raceStart').value);
+  if (t0 != null && t0 < first - 12 * 3600) t0 = clockOnDayOf(first, $('raceStart').value, 1);
+  let t1 = t0 == null ? null : clockOnDayOf(t0, $('raceEnd').value);
+  if (t1 != null && t1 <= t0) t1 = clockOnDayOf(t0, $('raceEnd').value, 1);
+  if (t0 == null || t1 == null) { setStatus('Enter the race start and end as HH:MM or HH:MM:SS.'); return; }
+  race = { on: true, t0, t1 };
+  $('raceOn').checked = true;
+  applyRace();
+}
+
+// Rebuild the track from the fixes inside the race window (or all of them) and redo everything.
+function applyRace() {
+  const { t } = fullTrack;
+  const a = race.on ? lowerBound(t, race.t0) : 0, b = race.on ? upperBound(t, race.t1) : t.length;
+  if (b - a < 10) { setStatus('Fewer than 10 GPS fixes between those times.'); return; }
+  setStatus('');
+  const curT = track.t[cur];
+  track = a === 0 && b === t.length ? fullTrack : sliceTrack(fullTrack, a, b);
+  sel = null;
+  cur = clamp(lowerBound(track.t, curT), 0, track.n - 1);
+  recompute();
+  fitMapTo(0, track.n - 1);
+}
+
 function loadGpxText(text, fileName) {
   try {
     const parsed = parseGpx(text);
     stopPlay();
-    track = buildTrack(parsed, fileName);
+    track = fullTrack = buildTrack(parsed, fileName);
+    race = { on: false, t0: track.t[0], t1: track.t[track.n - 1] };
+    $('raceOn').checked = false;
     sel = null;
     pins = [];
     cur = 0;
     $('empty').hidden = true;
-    for (const id of ['play', 'scrub']) $(id).disabled = false;
+    for (const id of ['play', 'scrub', 'raceOn', 'raceStart', 'raceEnd']) $(id).disabled = false;
     recompute();
     fitMapTo(0, track.n - 1);
     setStatus('');
@@ -847,8 +918,16 @@ $('scrub').oninput = e => { const i = +e.target.value; setCurrent(i, 'scrub'); i
 $('smooth').onchange = e => { settings.smoothS = +e.target.value; if (track) recompute(); };
 $('fitSel').onclick = () => { if (sel) fitMapTo(sel[0], sel[1]); };
 $('pin').onclick = () => {
-  if (sel && !pins.some(p => p[0] === sel[0] && p[1] === sel[1])) { pins.push([...sel]); renderStats(); }
+  if (!sel) return;
+  const p = [track.t[sel[0]], track.t[sel[1]]];
+  if (!pins.some(q => q[0] === p[0] && q[1] === p[1])) { pins.push(p); renderStats(); }
 };
+$('raceOn').onchange = e => { race.on = e.target.checked; applyRace(); };
+// Typing in a time box changes its value field by field; wait for a pause before recomputing.
+let raceTimer = 0;
+for (const id of ['raceStart', 'raceEnd']) {
+  $(id).onchange = () => { clearTimeout(raceTimer); raceTimer = setTimeout(setRaceFromBoxes, 700); };
+}
 
 (function initTzSelect() {
   const tzSel = $('tz');

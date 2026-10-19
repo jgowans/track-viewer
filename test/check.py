@@ -5,7 +5,7 @@ A page opened from file:// can't fetch a local GPX, so each run writes a throwaw
 index.html that pulls the GPX in through a <script> tag and calls window.loadGpxText().
 The page's own JS does all the work; this script only reports the result.
 
-    test/check.py [--screenshot DIR] [--tz ZONE] [--smooth SECONDS] FILE.gpx...
+    test/check.py [--screenshot DIR] [--tz ZONE] [--smooth SECONDS] [--race HH:MM-HH:MM] FILE.gpx...
 
 Needs google-chrome or chromium on PATH (or CHROME=/path/to/chrome) and internet access
 for the CDN libraries and map tiles.
@@ -21,6 +21,7 @@ PROBE = """
 const t0 = performance.now();
 settings.smoothS = SMOOTH_S; document.getElementById('smooth').value = String(SMOOTH_S);
 loadGpxText(window.GPX_TEXT, 'test');
+if (RACE) { [raceStart.value, raceEnd.value] = RACE; setRaceFromBoxes(); }
 const loadMs = Math.round(performance.now() - t0);
 setTimeout(() => {
   const rows = id => [...document.querySelectorAll(id + ' tr')].map(r => [...r.cells].map(c => c.textContent));
@@ -48,12 +49,12 @@ def chrome():
     return exe
 
 
-def run(gpx, tz, smooth, shot):
+def run(gpx, tz, smooth, race, shot):
     page = (ROOT / 'index.html').read_text()
     with tempfile.TemporaryDirectory() as tmp:
         tmp = pathlib.Path(tmp)
         (tmp / 'gpxdata.js').write_text('window.GPX_TEXT = ' + json.dumps(pathlib.Path(gpx).read_text()) + ';')
-        probe = PROBE.replace('SMOOTH_S', str(smooth))
+        probe = PROBE.replace('SMOOTH_S', str(smooth)).replace('RACE', json.dumps(race.split('-') if race else None))
         (tmp / 'test.html').write_text(page.replace('<head>', '<head>' + CATCH, 1).replace('</body>', probe + '</body>', 1))
         args = [chrome(), '--headless=new', '--disable-gpu', '--window-size=1600,1000', '--virtual-time-budget=20000']
         env = {**os.environ, 'TZ': tz}
@@ -79,12 +80,13 @@ def main():
     ap.add_argument('gpx', nargs='+')
     ap.add_argument('--tz', default='Africa/Johannesburg', help='browser time zone (default %(default)s)')
     ap.add_argument('--smooth', type=int, default=20, choices=[6, 10, 20, 30, 60], help='smoothing in seconds (default %(default)s)')
+    ap.add_argument('--race', metavar='HH:MM-HH:MM', help='only analyse the race window, e.g. 09:00-16:30:00')
     ap.add_argument('--screenshot', metavar='DIR', help='also save DIR/<file>.png at 1600x1000')
     a = ap.parse_args()
     failed = False
     for gpx in a.gpx:
         shot = a.screenshot and str(pathlib.Path(a.screenshot) / (pathlib.Path(gpx).stem + '.png'))
-        r = run(gpx, a.tz, a.smooth, shot)
+        r = run(gpx, a.tz, a.smooth, a.race, shot)
         failed |= bool(r.get('errors') or r.get('status'))
         print(f"== {gpx}\n  {r.get('name')}: {r.get('fixes')} fixes, loaded in {r.get('loadMs')} ms, "
               f"speed class breaks {r.get('speedBreaks')} kn, {r.get('trackLayers')} track polylines")

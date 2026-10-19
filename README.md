@@ -7,6 +7,7 @@ The page needs internet access for map tiles and for its two libraries, Leaflet 
 
 ## What it shows
 
+- **Race window:** start and end times in the toolbar hide the sail to and from the start. Everything is then worked out for the race only, including speed colours and turns. **Race only** switches the filter on and off. Times are in the selected time zone, and an end time earlier than the start counts as the next day.
 - **Map:** the track coloured by speed over ground (SOG) in five classes: red for the slowest fifth of the time moving, through orange, pale yellow and light green, to green for the fastest fifth. Start, end and turns are marked. Base maps: Esri Ocean (default), GEBCO bathymetry, Esri light grey and Esri satellite. The OpenSeaMap seamark layer (buoys, lights) is on by default.
 - **Charts:** SOG and course over ground (COG) against time. Hovering the map or a chart moves a boat marker and a readout. Dragging across a chart selects a period. Double-clicking resets it.
 - **Periods:** distance sailed, average and max SOG, distance made good, efficiency, mean course and number of turns, for the whole track and the selected period. **Pin selection** keeps a period as an extra column, so you can compare, for example, the outbound and return legs.

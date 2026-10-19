@@ -132,6 +132,16 @@ The user pointed out that most courses have more legs and turns. A general cours
 - **Colour blindness:** with red-green colour blindness the two ends look alike. ColorBrewer RdYlBu is the drop-in alternative, but its blue end is harder to see on water.
 - **Classes are relative to the whole track,** so on a course with beats and runs the slower point of sail shows as red even when sailed well (see backlog).
 
+### 3.9 Race window
+
+The user asked: *"I want the ability to filter out/in the track before and after the race; gimme a box for start time and end time."*
+
+- **Controls:** a **Race only** checkbox and two `<input type="time" step="1">` boxes in the toolbar. On load the boxes hold the first and last fix times and the filter is off. Editing a box switches it on. A 700 ms pause is allowed after the last edit, because time boxes change their value field by field while typing.
+- **What it changes:** the window is kept as Unix seconds in `race = { on, t0, t1 }`. With the filter on, `applyRace` builds `track` as a slice of `fullTrack` (typed-array views, no copying) and reruns `recompute`. So speed classes, turns, stats and charts all cover the race only, and the pre-start circling and the motor home no longer count. With it off, `track` is `fullTrack` again.
+- **Turning clock times into moments:** times are read in the selected time zone (`clockOnDayOf`, which works out the zone's UTC offset from `Intl.DateTimeFormat.formatToParts`). The start goes on the calendar day of the first fix, or the next day if that would be more than 12 h before the first fix. The end is the first such time after the start, so a race finishing at 00:04 works. Changing the time zone keeps the same window and rewrites the boxes in the new zone.
+- **What happens to pins and selection:** pins are stored as times, so they survive a window change, clipped to the window (and hidden if entirely outside). The selection is cleared. The first stats column reads "Race" instead of "Whole".
+- **Not saved:** the window isn't kept between sessions (see backlog).
+
 ## 4. How the code fits together
 
 Everything is in `index.html`: HTML, CSS, then one script divided into sections by `// ---------- name ----------` comments.
@@ -143,16 +153,17 @@ Everything is in `index.html`: HTML, CSS, then one script divided into sections 
 | constants and helpers | Turn and recovery constants, `distM` (haversine), `bearingDeg`, `angDiff`, `lowerBound`/`upperBound` |
 | formatting | Time-zone-aware `Intl.DateTimeFormat` cache (`dtf`), `fmtTime`, `fmtHM`, `fmtDate`, `fmtDur`, `fmtDDM` (degrees and decimal minutes, e.g. `33 51.907'S  018 25.463'E`) |
 | GPX parsing and analysis | `parseGpx` (namespace-agnostic, sorts by time, drops repeated timestamps), `buildTrack` (typed arrays and cumulative distance), `analyse` (SOG, COG, turns, colour scale), `legStats` (one period's numbers) |
-| state | `settings` (smoothing, time zone), `track`, `an`, `sel`, `pins`, `cur`, `charts`, flags |
+| state | `settings` (smoothing, time zone), `fullTrack` (every fix), `track` (what is analysed), `race`, `an`, `sel`, `pins` (as times), `cur`, `charts`, flags |
 | map | Base layers and overlay, panes, renderers, boat marker, info and legend controls, `SPEED_COLORS`/`speedClass`, `drawTrack`, `drawPoints`, `drawSelection`, `updateLegend`, `updateInfo`, `fitMapTo`, map hover |
 | charts | `marksPlugin` (dashed lines at turns), `buildCharts`, `setRange`, `onRange`, `syncChartCursors`, resize handling |
 | side panel | `renderStats` (periods table), `renderTurns`, `zoomToTurn` |
-| cursor and replay | `setCurrent`, `startPlay`/`stopPlay`/`stepPlay`, `recompute`, `loadGpxText` (exposed as `window.loadGpxText` for the console and tests), `openFile` |
+| cursor and replay | `setCurrent`, `startPlay`/`stopPlay`/`stepPlay`, `recompute` |
+| race window | `tzOffsetMs`, `clockOnDayOf`, `setRaceFromBoxes`, `applyRace`, `loadGpxText` (exposed as `window.loadGpxText` for the console and tests), `openFile` |
 | controls | Button, select and slider handlers, time-zone list, drag and drop, global error reporting |
 
 ### 4.2 Data flow
 
-1. A file arrives through `openFile` → `loadGpxText` → `parseGpx` → `buildTrack`, which resets `sel`, `pins` and `cur`. Then `recompute()` runs, and finally `fitMapTo` fits the whole track.
+1. A file arrives through `openFile` → `loadGpxText` → `parseGpx` → `buildTrack`, which sets `fullTrack` and `track`, turns the race filter off, and resets `sel`, `pins` and `cur`. Then `recompute()` runs, and finally `fitMapTo` fits the whole track. Changing the race window goes through `applyRace`, which slices `track` out of `fullTrack` and does the same.
 2. `recompute()` (also run when smoothing or time zone change) calls `analyse`, then `drawTrack`, `drawPoints`, `updateLegend`, `renderTurns` and `buildCharts`, then `setCurrent`.
 3. `buildCharts()` destroys and recreates the two uPlot charts (SOG, COG). It keeps the current selection by time, so a selection survives a change of smoothing or time zone.
 4. A zoom on any chart fires the first chart's `setScale` hook, which calls `onRange`. That converts the time range to indices, sets `sel` (`null` means the whole track), updates the slider range and buttons, and calls `drawSelection` and `renderStats`.
@@ -179,7 +190,7 @@ Everything is in `index.html`: HTML, CSS, then one script divided into sections 
 ### 5.1 Headless check: `test/check.py`
 
 ```
-test/check.py [--screenshot DIR] [--tz Africa/Johannesburg] [--smooth 20] FILE.gpx...
+test/check.py [--screenshot DIR] [--tz Africa/Johannesburg] [--smooth 20] [--race 18:05-19:35] FILE.gpx...
 ```
 
 For each file it writes a temporary copy of `index.html`, loads the GPX through a `<script>` tag, and calls `loadGpxText` (a `file://` page can't fetch the GPX itself). It runs headless Chrome and prints the load time, the speed class limits, the Periods table and the Turns table, optionally with a 1600×1000 screenshot. It exits non-zero on JS errors, a status message or a missing screenshot. Each Chrome launch gets its own profile directory: a second Chrome started on a profile that is still in use exits without output.
@@ -225,7 +236,7 @@ Found by running the four tracks above.
 
 1. **GPS gaps are drawn as if sailed.** The page draws a straight line across a gap on the map and chart, and counts the straight line as distance sailed. On 7 Oct 2026 the watch logged nothing from 18:36:08 to 19:06:18 (30 min) and the next fix is 3.3 km away. That makes "sailed" too low and the SOG line flat across the gap. 2 Sep 2026 has a 380 s gap at 17:10:52–17:17:12. *Fix idea:* treat a gap of more than about 60 s as a break. Use `null` in the chart data, split the map polylines, leave it out of sailed distance (or show it separately), and mark gaps on the chart.
 2. **Loss and Recover are overstated at mark roundings.** They compare with the entry speed, but after a rounding the boat is on a different point of sail. On 2 Sep 2026 at 17:57 (a 180° turn) the entry speed was 8.4 kn and the speed settled at 6.4–6.5 kn, so the table shows ">5m" and 1m 26s lost. On 17 Oct 2026, 18:03 (6.0 → 4.4 kn) and 20:53 (6.3 → 3.9 kn) show the same thing. *Fix idea:* recover to 90% of the lower of the entry speed and the steady exit speed (mean SOG 60–180 s after), and measure loss against a line from entry to exit speed.
-3. **Non-sailing turns are counted.** Pre-start circling (three starboard turns at 16:58–17:09 on 2 Sep 2026) and drifting at the end of a sail near 2 kn (2 Sep 18:47–18:56, 7 Oct 19:37–19:38) are all listed, with losses of up to 4 minutes. Turns less than 30 s apart merge into one, so tacks closer together than that would be under-counted.
+3. **Non-sailing turns are counted.** Pre-start circling (three starboard turns at 16:58–17:09 on 2 Sep 2026) and drifting at the end of a sail near 2 kn (2 Sep 18:47–18:56, 7 Oct 19:37–19:38) are all listed, with losses of up to 4 minutes. Setting the race window (3.9) leaves most of these out. Turns less than 30 s apart merge into one, so tacks closer together than that would be under-counted.
 4. **Mean COG and made good are blank for the whole of a point-to-point race that bends round a cape.** On 17 Oct 2026 the course changes direction too much. This is the "one way" rule working as designed, but it may surprise.
 5. **Max SOG depends on smoothing.** Shorter windows let more GPS noise through. On the 2024 track the max is 8.69 kn at 20 s and 10.37 kn at 10 s, while the raw fix-to-fix maximum is 15 kn. Use 20 s or more for honest maxima.
 6. **Speed colours look speckled on steady long races at the default 20 s smoothing.** On the 2024 track the class limits are only 0.3 kn apart (5.8 / 6.1 / 6.4 / 6.7 kn), so GPS noise moves fixes between classes every few seconds. At 60 s smoothing the slow and fast stretches stand out as solid runs, and the map needs 2,216 polylines instead of 5,757. The evening races, with a wider spread of speeds, read well at 20 s.
@@ -238,7 +249,7 @@ These are in the order that best serves "see what it did". The first two are fix
 2. Turn loss measured against exit speed (issue 2).
 3. Speed colours: smooth the colouring separately from the charts (e.g. 60 s for colours, issue 6), and offer colour classes relative to the current selection, so slow and fast stretches within one leg show even when beats are always slower than runs.
 4. Tack and gybe angles, made visible (README, "Ideas for later"): a course rose per selection, before/after arrows at each turn, and the tacking angle per period. The user said they *do* care about tack and gybe angles, but parked them for later: *"propose that as future idea; let's keep it simple to start with."*
-5. Save pins per track in `localStorage`, keyed by the first fix time and fix count.
+5. Save pins and the race window per track in `localStorage`, keyed by the first fix time and fix count. Also a button to set the race window from the current chart selection.
 6. Click between two turns on a chart to select exactly that stretch, which makes pinning legs quicker.
 7. Option to set a minimum speed for turns, or to hide turns before the first long straight leg (issue 3).
 8. Larger features, each needing a design discussion first: wind and polars (README, "Ideas for later"), course marks and start-line analysis (8.2), comparing several tracks, and offline use (copy the libraries into the repo, plus an offline tile source).
@@ -256,6 +267,7 @@ These are in the order that best serves "see what it did". The first two are fix
 - Turn loss: shown in seconds, because that's how the crew talks about it.
 - Turns: two close tacks must show as two, at the right place (the 7 Oct 2026 report in 3.6).
 - Speed colours: the first gradient made slow and fast parts hard to see. Replaced with five red-to-green classes (3.8).
+- Race window: start and end time boxes to leave out the track before and after the race (3.9).
 
 ### 8.2 General course model (deferred)
 
