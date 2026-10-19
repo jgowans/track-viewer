@@ -101,8 +101,12 @@ The user asked whether OpenSeaMap's JOSM link could import a track. It can't:
 A turn is detected and measured like this (constants are at the top of the script):
 
 - **Detection:** at each fix, compare the circular-mean COG 20–60 s before with 20–60 s after (`TURN_WIN`). It's a turn if the change is ≥ 50° (`TURN_MIN_DEG`) and the mean SOG before is ≥ 2 kn (`TURN_MIN_KN`). Running sums make each of these means constant-time.
-- **One turn, many fixes:** fixes that qualify within 90 s of each other are treated as one turn. The fix with the largest course change marks it.
-- **Entry speed:** mean SOG 20–60 s before. **Minimum:** lowest SOG from 20 s before to 40 s after.
+- **One turn, many fixes:** consecutive qualifying fixes form a run, and a run is one turn. A new run starts when the gap since the last qualifying fix exceeds 30 s (`TURN_GAP_S`), or when the turn direction flips. Direction comes from the running total of course change across the windows, not from the before/after difference, because GPS noise flips a near-180° change between +179° and −179°.
+- **Where the turn is:** the first fix in the run where COG has passed halfway from the course before to the course after, which is the middle of the turn. The before/after difference stays near its peak for about 40 s around a sharp turn, so the peak fix can sit 20 s from the real turn.
+- **Course and size:** taken from the fix in the run with the largest change, where the windows sit clear of the turn.
+- **Noise filter:** turns less than 30 s apart (`TURN_MIN_SEP_S`) are taken to be GPS noise around one turn, as happens when nearly stopped. Only the larger is kept.
+- **History:** these rules replaced "qualifying fixes within 90 s are one turn, marked at the largest change". The user spotted the problem on 7 Oct 2026: a starboard tack at 18:17:06 was missing, and the port tack at 18:18:35 was shown at 18:18:55. The two turns were 90 s apart, so their runs touched and merged, and the larger one was kept. Now they show at 18:17:07 and 18:18:36.
+- **Entry speed:** mean SOG 20–60 s before the middle of the turn. **Minimum:** lowest SOG from 20 s before to 40 s after.
 - **Recover:** time from the slowest point until SOG is back to 90% of entry speed (`RECOVER_FRAC`), capped at 5 min (`RECOVER_CAP_S`, shown as ">5m").
 - **Loss:** the integral of (entry speed − SOG) from 20 s before until recovery or the cap, in metres and floored at 0, then divided by entry speed to give seconds. The table shows seconds because that's how sailors talk about it (*"this tack cost us 45 seconds"*). The metres appear in the row's tooltip. It's measured over the ground, not in VMG terms.
 - **What it can't tell:** without wind it cannot tell a tack from a gybe or a mark rounding. Direction is reported as P (to port, course decreasing) or S (to starboard).
@@ -201,14 +205,14 @@ Interactions were checked with one-off scripts in the same style (calling `setRa
 
 ### 5.3 Test tracks
 
-The GPX files are personal location history and stay out of git (`.gitignore` has `*.gpx`). The user keeps them in `~/Downloads/`; the last three are in `~/Downloads/GPX-files-for-analysis-frontend/`. Times are SAST (UTC+2) at 20 s smoothing.
+The GPX files are personal location history and stay out of git (`.gitignore` has `*.gpx`). The user keeps them in `~/Downloads/`; the last three are in `~/Downloads/GPX-files-for-analysis-frontend/`. Times are SAST (UTC+2), at 20 s smoothing.
 
 | File | When | What | Fixes | Elapsed | Sailed | Avg SOG | Max SOG | Turns |
 |---|---|---|---|---|---|---|---|---|
-| `activity_17328860833.gpx` | Sat 19 Oct 2024, 08:23–00:04 | Out-and-back distance race west of Table Bay. Turn-around 16:41, 46.75 nm from the first fix. | 17,434 | 15h 41m | 97.77 nm | 6.23 kn | 8.69 kn | 5 |
-| `activity_24242231850.gpx` | Wed 2 Sep 2026, 16:53–19:10 | Evening race in Table Bay, several legs. 380 s GPS gap. | 2,705 | 2h 16m | 13.03 nm | 5.73 kn | 12.63 kn | 13 |
-| `activity_24660672774.gpx` | Wed 7 Oct 2026, 17:23–19:40 | Evening race in Table Bay, several legs and pre-start circling. 1,810 s GPS gap. | 2,466 | 2h 17m | 11.39 nm | 4.99 kn | 7.89 kn | 11 |
-| `activity_24771299457.gpx` | Sat 17 Oct 2026, 09:07–23:48 | Coastal race from Table Bay round Cape Point into False Bay. Ends 22 nm from the start. | 23,616 | 14h 40m | 71.12 nm | 4.84 kn | 7.23 kn | 12 |
+| `activity_17328860833.gpx` | Sat 19 Oct 2024, 08:23–00:04 | Out-and-back distance race west of Table Bay. Turn-around 16:41, 46.75 nm from the first fix. | 17,434 | 15h 41m | 97.77 nm | 6.23 kn | 8.69 kn | 10 |
+| `activity_24242231850.gpx` | Wed 2 Sep 2026, 16:53–19:10 | Evening race in Table Bay, several legs. 380 s GPS gap. | 2,705 | 2h 16m | 13.03 nm | 5.73 kn | 12.63 kn | 19 |
+| `activity_24660672774.gpx` | Wed 7 Oct 2026, 17:23–19:40 | Evening race in Table Bay, several legs and pre-start circling. 1,810 s GPS gap. | 2,466 | 2h 17m | 11.39 nm | 4.99 kn | 7.89 kn | 16 |
+| `activity_24771299457.gpx` | Sat 17 Oct 2026, 09:07–23:48 | Coastal race from Table Bay round Cape Point into False Bay. Ends 22 nm from the start. | 23,616 | 14h 40m | 71.12 nm | 4.84 kn | 7.23 kn | 18 |
 
 - **Reference numbers for the 2024 track:** pinning the outbound leg (08:23–16:41) gives 50.87 nm sailed, 6.13 kn, 46.75 nm made good, 92%, COG 250°. Pinning the return leg (16:41–00:04) gives 46.89 nm, 6.35 kn, 45.97 nm, 98%, 064°.
 - **The 12.63 kn peak on 2 Sep 2026 looks real:** the straight-line speed stays at 10.4 kn over 2 minutes (18:29–18:31), so it isn't a single GPS jump.
@@ -220,8 +224,8 @@ The GPX files are personal location history and stay out of git (`.gitignore` ha
 Found by running the four tracks above.
 
 1. **GPS gaps are drawn as if sailed.** The page draws a straight line across a gap on the map and chart, and counts the straight line as distance sailed. On 7 Oct 2026 the watch logged nothing from 18:36:08 to 19:06:18 (30 min) and the next fix is 3.3 km away. That makes "sailed" too low and the SOG line flat across the gap. 2 Sep 2026 has a 380 s gap at 17:10:52–17:17:12. *Fix idea:* treat a gap of more than about 60 s as a break. Use `null` in the chart data, split the map polylines, leave it out of sailed distance (or show it separately), and mark gaps on the chart.
-2. **Loss and Recover are overstated at mark roundings.** They compare with the entry speed, but after a rounding the boat is on a different point of sail. On 2 Sep 2026 at 17:57:47 (a 180° turn) the entry speed was 8.5 kn and the speed settled at 6.4–6.5 kn, so the table shows ">5m" and 347 m (81 s) lost. On 17 Oct 2026, 18:03:24 (6.0 → 4.4 kn) and 20:52:46 (6.3 → 3.9 kn) show the same thing. *Fix idea:* recover to 90% of the lower of the entry speed and the steady exit speed (mean SOG 60–180 s after), and measure loss against a line from entry to exit speed.
-3. **Non-sailing turns are counted.** Pre-start circling (three starboard turns at 16:58–17:09 on 2 Sep 2026) and drifting at the end of a sail near 2 kn (2 Sep 18:47 and 18:56, 7 Oct 19:38) are all listed. Turns less than about 90 s apart merge into one, so a fast tacking duel would be under-counted.
+2. **Loss and Recover are overstated at mark roundings.** They compare with the entry speed, but after a rounding the boat is on a different point of sail. On 2 Sep 2026 at 17:57 (a 180° turn) the entry speed was 8.4 kn and the speed settled at 6.4–6.5 kn, so the table shows ">5m" and 1m 26s lost. On 17 Oct 2026, 18:03 (6.0 → 4.4 kn) and 20:53 (6.3 → 3.9 kn) show the same thing. *Fix idea:* recover to 90% of the lower of the entry speed and the steady exit speed (mean SOG 60–180 s after), and measure loss against a line from entry to exit speed.
+3. **Non-sailing turns are counted.** Pre-start circling (three starboard turns at 16:58–17:09 on 2 Sep 2026) and drifting at the end of a sail near 2 kn (2 Sep 18:47–18:56, 7 Oct 19:37–19:38) are all listed, with losses of up to 4 minutes. Turns less than 30 s apart merge into one, so tacks closer together than that would be under-counted.
 4. **Mean COG and made good are blank for the whole of a point-to-point race that bends round a cape.** On 17 Oct 2026 the course changes direction too much. This is the "one way" rule working as designed, but it may surprise.
 5. **Max SOG depends on smoothing.** Shorter windows let more GPS noise through. On the 2024 track the max is 8.69 kn at 20 s and 10.37 kn at 10 s, while the raw fix-to-fix maximum is 15 kn. Use 20 s or more for honest maxima.
 6. **Speed colours look speckled on steady long races at the default 20 s smoothing.** On the 2024 track the class limits are only 0.3 kn apart (5.8 / 6.1 / 6.4 / 6.7 kn), so GPS noise moves fixes between classes every few seconds. At 60 s smoothing the slow and fast stretches stand out as solid runs, and the map needs 2,216 polylines instead of 5,757. The evening races, with a wider spread of speeds, read well at 20 s.
@@ -249,6 +253,8 @@ These are in the order that best serves "see what it did". The first two are fix
 - Wind and polars: not yet (*"I know what my boat should be doing and I want to see what it did"*). They are written up in the README for later.
 - Leg splits are not needed. Pinned selections were agreed instead.
 - Tack and gybe angles: wanted, but later.
+- Turn loss: shown in seconds, because that's how the crew talks about it.
+- Turns: two close tacks must show as two, at the right place (the 7 Oct 2026 report in 3.6).
 - Speed colours: the first gradient made slow and fast parts hard to see. Replaced with five red-to-green classes (3.8).
 
 ### 8.2 General course model (deferred)

@@ -17,7 +17,7 @@ The page needs internet access for map tiles and for its two libraries, Leaflet 
 
 - GPS fixes are 1–10 s apart and jitter by a few metres. SOG therefore comes from the straight-line distance across a time window centred on each fix (6–60 s, set by **Smoothing**). COG uses the same window, or 20 s if the window is shorter.
 - **Made good** is the straight-line distance from the start to the end of a period. **Efficiency** is made good divided by distance sailed. Made good, efficiency and **mean course** are left blank when the boat sailed in very different directions during the period, such as over a whole out-and-back race. A beat with tacks still counts as one direction.
-- A **turn** is a change of at least 50° between the mean course 20–60 s before a fix and 20–60 s after it, entered at 2 kn or more. **Recover** is the time from the slowest point until SOG is back to 90% of entry speed. **Loss** is the time given up compared with holding entry speed until then: the metres lost divided by entry speed.
+- A **turn** is a change of at least 50° between the mean course 20–60 s before a fix and 20–60 s after it, entered at 2 kn or more. It's marked where the course is halfway round. Turns in opposite directions are never merged, so two tacks in quick succession show as two. **Recover** is the time from the slowest point until SOG is back to 90% of entry speed. **Loss** is the time given up compared with holding entry speed until then: the metres lost divided by entry speed.
 
 ## Map sources
 

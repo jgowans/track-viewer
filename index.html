@@ -146,6 +146,8 @@ const RAD = Math.PI / 180;
 const TURN_MIN_DEG = 50;
 const TURN_MIN_KN = 2;
 const TURN_WIN = [20, 60];
+const TURN_GAP_S = 30;      // qualifying fixes turning the same way this close together are one turn
+const TURN_MIN_SEP_S = 30;  // turns closer together than this are GPS noise around one turn
 const RECOVER_FRAC = 0.9;
 const RECOVER_CAP_S = 300;
 
@@ -279,46 +281,71 @@ function analyse(tr, smoothS) {
   }
   const meanDir = (a, b) => (Math.atan2(sn[b] - sn[a], cs[b] - cs[a]) / RAD + 360) % 360;
   const meanSog = (a, b) => (ss[b] - ss[a]) / (b - a);
+  // Running total of course change, to tell which way the boat turned. For a turn near 180° the
+  // before/after difference can't say: GPS noise flips it between +179° and -179°.
+  const rot = new Float64Array(n);
+  for (let i = 1; i < n; i++) rot[i] = rot[i - 1] + angDiff(cog[i - 1], cog[i]);
 
   const [w0, w1] = TURN_WIN;
-  const peaks = [];
+  const runs = [];
   for (let i = 0; i < n; i++) {
     const a0 = lowerBound(t, t[i] - w1), a1 = lowerBound(t, t[i] - w0);
     const b0 = upperBound(t, t[i] + w0), b1 = upperBound(t, t[i] + w1);
     if (a1 - a0 < 3 || b1 - b0 < 3) continue;
     const before = meanDir(a0, a1), after = meanDir(b0, b1), change = angDiff(before, after), entry = meanSog(a0, a1);
     if (Math.abs(change) < TURN_MIN_DEG || entry < TURN_MIN_KN) continue;
-    // One turn produces a run of qualifying fixes; keep the one with the largest course change.
-    const c = { i, before, after, change, entry };
-    const last = peaks[peaks.length - 1];
-    if (last && t[i] - last.tLast <= 90) {
-      last.tLast = t[i];
-      if (Math.abs(change) > Math.abs(last.c.change)) last.c = c;
+    // One turn produces a run of qualifying fixes. Two turns close together, such as two tacks a minute
+    // or two apart, produce runs that touch, so a new run starts when the turn direction flips.
+    const c = { i, before, change, entry, dir: Math.sign(rot[b1 - 1] - rot[a0]) || Math.sign(change) };
+    const last = runs[runs.length - 1];
+    if (last && t[i] - t[last.iLast] <= TURN_GAP_S && c.dir === last.peak.dir) {
+      last.iLast = i;
+      if (Math.abs(change) > Math.abs(last.peak.change)) last.peak = c;
     } else {
-      peaks.push({ c, tLast: t[i] });
+      runs.push({ iFirst: i, iLast: i, peak: c });
     }
   }
 
-  const turns = peaks.map(({ c }) => {
-    const tm = t[c.i];
+  const turns = [];
+  for (const { iFirst, iLast, peak } of runs) {
+    // The before/after difference stays near its peak for ~40 s around a sharp turn, so the peak doesn't
+    // say where the turn was. Place it where the course passes halfway from the course before to after.
+    let im = peak.i;
+    for (let q = iFirst; q <= iLast; q++) {
+      if (peak.dir * angDiff(peak.before, cog[q]) >= Math.abs(peak.change) / 2) { im = q; break; }
+    }
+    const tm = t[im];
+    // Course and size come from the peak, where the windows sit clear of the turn. Entry speed is taken
+    // just before the halfway point, so it isn't dragged down by the start of the turn.
+    const a0 = lowerBound(t, tm - w1), a1 = lowerBound(t, tm - w0);
+    const entry = a1 - a0 >= 3 ? meanSog(a0, a1) : peak.entry;
     const s0 = lowerBound(t, tm - w0), s1 = upperBound(t, tm + 2 * w0);
     let iMin = s0;
     for (let q = s0; q < s1; q++) if (sog[q] < sog[iMin]) iMin = q;
     let iRec = -1;
     for (let q = iMin; q < n && t[q] <= tm + RECOVER_CAP_S; q++) {
-      if (sog[q] >= RECOVER_FRAC * c.entry) { iRec = q; break; }
+      if (sog[q] >= RECOVER_FRAC * entry) { iRec = q; break; }
     }
     const iEnd = iRec >= 0 ? iRec : Math.max(s0, upperBound(t, tm + RECOVER_CAP_S) - 1);
     let lossM = 0;
-    for (let q = s0 + 1; q <= iEnd; q++) lossM += (c.entry - sog[q]) / KN_PER_MPS * (t[q] - t[q - 1]);
+    for (let q = s0 + 1; q <= iEnd; q++) lossM += (entry - sog[q]) / KN_PER_MPS * (t[q] - t[q - 1]);
     lossM = Math.max(0, lossM);
-    return {
-      i: c.i, t: tm, before: c.before, after: c.after, change: c.change, entry: c.entry, min: sog[iMin],
+    const tn = {
+      i: im, t: tm, before: peak.before, after: (peak.before + peak.change + 360) % 360,
+      change: peak.dir * Math.abs(peak.change), entry, min: sog[iMin],
       recoverS: iRec >= 0 ? t[iRec] - t[iMin] : null, lossM,
       // Sailors talk about a turn costing seconds: the time it takes to sail the lost metres at entry speed.
-      lossS: lossM / (c.entry / KN_PER_MPS),
+      lossS: lossM / (entry / KN_PER_MPS),
     };
-  });
+    // GPS noise while nearly stopped can split one turn into several in alternating directions.
+    // Real turns are further apart, so of two turns this close together keep the bigger one.
+    const prev = turns[turns.length - 1];
+    if (prev && tm - prev.t < TURN_MIN_SEP_S) {
+      if (Math.abs(tn.change) > Math.abs(prev.change)) turns[turns.length - 1] = tn;
+    } else {
+      turns.push(tn);
+    }
+  }
 
   // Five speed classes, each holding about a fifth of the moving fixes, so the colours spread over the
   // speeds the boat actually sailed. A scale linear in knots put most racing speeds in one colour.
