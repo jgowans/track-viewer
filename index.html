@@ -311,9 +311,12 @@ function analyse(tr, smoothS) {
     const iEnd = iRec >= 0 ? iRec : Math.max(s0, upperBound(t, tm + RECOVER_CAP_S) - 1);
     let lossM = 0;
     for (let q = s0 + 1; q <= iEnd; q++) lossM += (c.entry - sog[q]) / KN_PER_MPS * (t[q] - t[q - 1]);
+    lossM = Math.max(0, lossM);
     return {
       i: c.i, t: tm, before: c.before, after: c.after, change: c.change, entry: c.entry, min: sog[iMin],
-      recoverS: iRec >= 0 ? t[iRec] - t[iMin] : null, lossM: Math.max(0, lossM),
+      recoverS: iRec >= 0 ? t[iRec] - t[iMin] : null, lossM,
+      // Sailors talk about a turn costing seconds: the time it takes to sail the lost metres at entry speed.
+      lossS: lossM / (c.entry / KN_PER_MPS),
     };
   });
 
@@ -473,7 +476,7 @@ function drawPoints() {
     pane: 'points', radius, color: '#111', weight: 1.5, fillColor: fill, fillOpacity: 1,
   }).bindTooltip(text).addTo(pointLayer);
   an.turns.forEach(tn => {
-    dot(tn.i, '#fff', 4, `${fmtTime(tn.t)} · ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'} · ${Math.round(tn.lossM)} m lost`)
+    dot(tn.i, '#fff', 4, `${fmtTime(tn.t)} · ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'} · ${fmtDur(tn.lossS)} lost`)
       .on('click', () => zoomToTurn(tn));
   });
   dot(0, '#2e7d32', 6, `Start of track · ${fmtTime(t[0])}`);
@@ -696,7 +699,7 @@ function renderTurns() {
   table.textContent = '';
   $('turnsNote').textContent = an.turns.length
     ? `Course changes of ${TURN_MIN_DEG}° or more above ${TURN_MIN_KN} kn. Recover is the time from the slowest point until SOG is back to `
-      + `${RECOVER_FRAC * 100}% of entry speed. Loss is the distance given up compared with holding entry speed until then.`
+      + `${RECOVER_FRAC * 100}% of entry speed. Loss is the time given up compared with holding entry speed until then.`
     : `No course changes of ${TURN_MIN_DEG}° or more found.`;
   if (!an.turns.length) return;
   const head = table.createTHead().insertRow();
@@ -711,10 +714,10 @@ function renderTurns() {
       tn.entry.toFixed(1),
       tn.min.toFixed(1),
       tn.recoverS == null ? `>${RECOVER_CAP_S / 60}m` : fmtDur(tn.recoverS),
-      `${Math.round(tn.lossM)} m`,
+      fmtDur(tn.lossS),
     ];
     for (const v of vals) tr.insertCell().textContent = v;
-    tr.title = `Turned ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'}. Click to zoom.`;
+    tr.title = `Turned ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'}, ${Math.round(tn.lossM)} m lost. Click to zoom.`;
     tr.onclick = () => zoomToTurn(tn);
   }
 }
