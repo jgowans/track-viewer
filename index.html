@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Track viewer</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css"
+      integrity="sha384-IfV0B7MIOYuO95kO9G5ySKPz/85zqFNOAs8iy4tkK5zd9izhJAB8b7lHrwYqqmYE" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"
+        integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c" crossorigin="anonymous"></script>
+<style>
+  :root { --side: 420px; font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1b2733; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; }
+  button, select, input { font: inherit; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 10px; background: #0f2a44; color: #e8eef4; }
+  header .title { font-weight: 600; }
+  header .group { display: flex; align-items: center; gap: 6px; }
+  #trackName { opacity: .85; }
+  #status { color: #ffcf8a; }
+  .btn, button { background: #e8eef4; color: #0f2a44; border: 0; border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #scrub { width: 240px; }
+
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) var(--side); }
+  #left { display: flex; flex-direction: column; min-height: 0; }
+  #mapWrap { position: relative; flex: 1; min-height: 280px; }
+  #map { position: absolute; inset: 0; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 1000; pointer-events: none; }
+  #empty div { background: rgba(255,255,255,.94); padding: 14px 18px; border-radius: 6px; font-size: 15px; box-shadow: 0 1px 6px rgba(0,0,0,.25); }
+  #charts { padding: 4px 8px 2px; background: #fff; border-top: 1px solid #ccd6e0; }
+  #charts:empty { display: none; }
+  .u-legend { font-size: 12px; }
+  .nox .u-legend .u-series:first-child { display: none; }
+
+  aside { overflow: auto; border-left: 1px solid #ccd6e0; padding: 4px 12px 12px; background: #f7f9fb; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #4a5b6c; margin: 14px 0 6px; }
+  aside table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 12px; }
+  aside th, aside td { padding: 2px 4px; text-align: right; white-space: nowrap; }
+  aside th:first-child, aside td:first-child { text-align: left; }
+  aside thead th { border-bottom: 1px solid #ccd6e0; font-weight: 600; }
+  aside .sel { background: #fff3c4; }
+  #turns tbody tr { cursor: pointer; }
+  #turns tbody tr:hover { background: #e3edf7; }
+  #markInput { width: 100%; padding: 3px 5px; }
+  .row { display: flex; gap: 6px; margin-top: 5px; }
+  .muted { color: #66788a; }
+  aside p { margin: 5px 0; }
+  aside ul { padding-left: 18px; margin: 4px 0; color: #4a5b6c; }
+
+  .info, .legend { background: rgba(255,255,255,.93); padding: 6px 9px; border-radius: 5px; box-shadow: 0 1px 5px rgba(0,0,0,.3); font-variant-numeric: tabular-nums; }
+  .info { line-height: 1.5; min-width: 200px; }
+  .legend canvas { display: block; width: 180px; height: 10px; margin: 3px 0 1px; }
+  .legend .ticks { display: flex; justify-content: space-between; }
+  .boat svg { width: 22px; height: 22px; display: block; overflow: visible; }
+  .mark-icon { font-size: 22px; line-height: 22px; color: #111; text-shadow: 0 0 2px #fff, 0 0 3px #fff; cursor: move; }
+  .picking, .picking .leaflet-interactive { cursor: crosshair !important; }
+  #drop { position: fixed; inset: 0; background: rgba(15,42,68,.6); color: #fff; font-size: 22px; display: none; align-items: center; justify-content: center; z-index: 5000; pointer-events: none; }
+  #drop.show { display: flex; }
+</style>
+</head>
+<body>
+<header>
+  <span class="title">Track viewer</span>
+  <label class="btn">Open GPX…<input type="file" id="file" accept=".gpx" hidden></label>
+  <span id="trackName"></span>
+  <span class="group">
+    <button id="play" disabled title="Replay the selected period">▶ Play</button>
+    <select id="rate" title="Replay speed">
+      <option value="60">60×</option>
+      <option value="300">300×</option>
+      <option value="600" selected>600×</option>
+      <option value="1800">1800×</option>
+      <option value="3600">3600×</option>
+    </select>
+    <input type="range" id="scrub" min="0" max="0" value="0" disabled title="Scrub through the selected period">
+    <label title="Keep the boat in view during replay"><input type="checkbox" id="follow"> Follow</label>
+  </span>
+  <span class="group">
+    <label title="Time window used to compute SOG, VMC and COG from the GPS fixes">Smoothing
+      <select id="smooth">
+        <option value="6">6 s</option>
+        <option value="10">10 s</option>
+        <option value="20" selected>20 s</option>
+        <option value="30">30 s</option>
+        <option value="60">60 s</option>
+      </select></label>
+    <label>Time zone <select id="tz"></select></label>
+  </span>
+  <span id="status" role="status"></span>
+</header>
+
+<main>
+  <section id="left">
+    <div id="mapWrap">
+      <div id="map"></div>
+      <div id="empty"><div>Open a GPX file, or drop one on the page.</div></div>
+    </div>
+    <div id="charts"></div>
+  </section>
+
+  <aside>
+    <h2>Mark</h2>
+    <input id="markInput" spellcheck="false" placeholder="33 51.907'S  018 25.463'E" disabled>
+    <div class="row">
+      <button id="pickMark" disabled>Pick on map</button>
+      <button id="resetMark" disabled>Use first point</button>
+    </div>
+    <p class="muted">Range and VMC are measured from this point. Drag the ⚑ on the map, pick a point, or type a position.</p>
+
+    <h2>Legs</h2>
+    <table id="stats"></table>
+    <p class="muted">Distances in nm, speeds in kn. Made good is distance away from the mark until the turn-around, then back toward it. Efficiency is made good divided by sailed.</p>
+    <div class="row"><button id="fitSel" disabled>Fit map to selection</button></div>
+
+    <h2>Turns</h2>
+    <table id="turns"></table>
+    <p class="muted" id="turnsNote"></p>
+
+    <h2>How to use</h2>
+    <ul>
+      <li>Hover the track or the charts to read time, speed and course at that moment.</li>
+      <li>Drag across a chart to select a period. The map highlights it, Legs adds a Selection column, and Play replays only that period. Double-click a chart to reset.</li>
+      <li>Click a row in Turns, or a white dot on the track, to zoom to that turn.</li>
+    </ul>
+  </aside>
+</main>
+<div id="drop">Drop the GPX file to open it</div>
+
+<script>
+'use strict';
+
+// ---------- constants and helpers ----------
+
+const KN_PER_MPS = 3600 / 1852;
+const M_PER_NM = 1852;
+const R_EARTH = 6371008.8;
+const RAD = Math.PI / 180;
+// A turn is a course change of at least TURN_MIN_DEG between the TURN_WIN seconds before and after it,
+// sailed faster than TURN_MIN_KN (so drifting and docking don't count).
+const TURN_MIN_DEG = 50;
+const TURN_MIN_KN = 2;
+const TURN_WIN = [20, 60];
+const RECOVER_FRAC = 0.9;
+const RECOVER_CAP_S = 300;
+
+const $ = id => document.getElementById(id);
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const pad3 = deg => String(Math.round(deg) % 360).padStart(3, '0');
+const angDiff = (a, b) => ((b - a + 540) % 360) - 180;   // signed change from a to b, -180..180
+
+function distM(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * RAD, p2 = lat2 * RAD, dp = p2 - p1, dl = (lon2 - lon1) * RAD;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * R_EARTH * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * RAD, p2 = lat2 * RAD, dl = (lon2 - lon1) * RAD;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) / RAD + 360) % 360;
+}
+
+// first index with arr[i] >= x
+function lowerBound(arr, x) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; }
+  return lo;
+}
+
+// first index with arr[i] > x
+function upperBound(arr, x) {
+  let lo = 0, hi = arr.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= x) lo = m + 1; else hi = m; }
+  return lo;
+}
+
+// ---------- formatting ----------
+
+const fmtCache = new Map();
+function dtf(opts) {
+  const key = settings.tz + JSON.stringify(opts);
+  let f = fmtCache.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-GB', { timeZone: settings.tz, hourCycle: 'h23', ...opts });
+    fmtCache.set(key, f);
+  }
+  return f;
+}
+const fmtTime = ts => dtf({ hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(ts * 1000);
+const fmtHM = ts => dtf({ hour: '2-digit', minute: '2-digit' }).format(ts * 1000);
+const fmtDate = ts => dtf({ weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(ts * 1000);
+
+function fmtDur(s) {
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (h) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m) return `${m}m ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
+// Degrees and decimal minutes, e.g. 33 51.907'S  018 25.463'E
+function fmtDDM(lat, lon) {
+  const part = (v, degWidth, pos, neg) => {
+    const a = Math.abs(v);
+    let d = Math.floor(a), m = (a - d) * 60;
+    if (m >= 59.9995) { d += 1; m = 0; }
+    return `${String(d).padStart(degWidth, '0')} ${m.toFixed(3).padStart(6, '0')}'${v < 0 ? neg : pos}`;
+  };
+  return `${part(lat, 2, 'N', 'S')}  ${part(lon, 3, 'E', 'W')}`;
+}
+
+// Accepts "33 51.907'S 018 25.463'E", "33°51.907'S, 18°25.463'E" or "-33.865, 18.424".
+function parseCoord(s) {
+  s = s.trim();
+  let m = s.match(/^(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)$/);
+  let lat, lon;
+  if (m) {
+    lat = +m[1]; lon = +m[2];
+  } else {
+    m = s.match(/^(\d{1,2})[°\s]+(\d{1,2}(?:\.\d+)?)'?\s*([NS])[\s,;]+(\d{1,3})[°\s]+(\d{1,2}(?:\.\d+)?)'?\s*([EW])$/i);
+    if (!m) return null;
+    lat = (+m[1] + m[2] / 60) * (/s/i.test(m[3]) ? -1 : 1);
+    lon = (+m[4] + m[5] / 60) * (/w/i.test(m[6]) ? -1 : 1);
+  }
+  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+
+// ---------- GPX parsing and analysis ----------
+
+function parseGpx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('This file is not valid GPX/XML.');
+  const trk = doc.getElementsByTagNameNS('*', 'trk')[0];
+  const nameEl = trk && [...trk.children].find(c => c.localName === 'name');
+  const pts = [];
+  for (const p of doc.getElementsByTagNameNS('*', 'trkpt')) {
+    const timeEl = [...p.children].find(c => c.localName === 'time');
+    if (!timeEl) continue;
+    const t = Date.parse(timeEl.textContent.trim()) / 1000;
+    const lat = parseFloat(p.getAttribute('lat')), lon = parseFloat(p.getAttribute('lon'));
+    if (Number.isFinite(t) && Number.isFinite(lat) && Number.isFinite(lon)) pts.push({ t, lat, lon });
+  }
+  pts.sort((a, b) => a.t - b.t);
+  const out = pts.filter((p, i) => i === 0 || p.t > pts[i - 1].t);   // drop repeated timestamps
+  if (out.length < 10) throw new Error('No timestamped track points found in this GPX file.');
+  return { name: nameEl ? nameEl.textContent.trim() : '', pts: out };
+}
+
+function buildTrack(parsed, fileName) {
+  const n = parsed.pts.length;
+  const t = new Float64Array(n), lat = new Float64Array(n), lon = new Float64Array(n), cum = new Float64Array(n);
+  parsed.pts.forEach((p, i) => {
+    t[i] = p.t; lat[i] = p.lat; lon[i] = p.lon;
+    if (i) cum[i] = cum[i - 1] + distM(lat[i - 1], lon[i - 1], lat[i], lon[i]);
+  });
+  return { name: parsed.name || fileName || 'Track', n, t, lat, lon, cum };
+}
+
+function analyse(tr, smoothS, mark) {
+  const { n, t, lat, lon } = tr;
+  const sog = new Float64Array(n), vmc = new Float64Array(n), cog = new Float64Array(n), range = new Float64Array(n);
+  for (let i = 0; i < n; i++) range[i] = distM(mark.lat, mark.lon, lat[i], lon[i]) / M_PER_NM;
+
+  // The turn-around is the furthest point from the mark, if the track then comes back meaningfully closer.
+  let iTurn = 0;
+  for (let i = 1; i < n; i++) if (range[i] > range[iTurn]) iTurn = i;
+  const hasTurn = iTurn > 0 && range[iTurn] - range[n - 1] > 0.25 * range[iTurn];
+
+  // GPS fixes are 1-9 s apart and jitter by a few metres, so point-to-point speeds are noisy.
+  // Speed and course come from the chord across a time window centred on each fix instead.
+  const win = (half) => {
+    let j = 0, k = 0;
+    return i => {
+      while (t[i] - t[j] > half) j++;
+      if (k < i) k = i;
+      while (k + 1 < n && t[k + 1] - t[i] <= half) k++;
+      return j < k ? [j, k] : [Math.max(0, i - 1), Math.min(n - 1, i + 1)];
+    };
+  };
+  const sogWin = win(smoothS / 2), cogWin = win(Math.max(smoothS, 20) / 2);
+  for (let i = 0; i < n; i++) {
+    const [a, b] = sogWin(i), dt = t[b] - t[a];
+    sog[i] = distM(lat[a], lon[a], lat[b], lon[b]) / dt * KN_PER_MPS;
+    vmc[i] = (hasTurn && i > iTurn ? -1 : 1) * (range[b] - range[a]) / dt * 3600;
+    const [c, d] = cogWin(i);
+    cog[i] = bearingDeg(lat[c], lon[c], lat[d], lon[d]);
+  }
+
+  // Prefix sums give O(1) mean course and speed over any index window [a, b).
+  const cs = new Float64Array(n + 1), sn = new Float64Array(n + 1), ss = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    cs[i + 1] = cs[i] + Math.cos(cog[i] * RAD);
+    sn[i + 1] = sn[i] + Math.sin(cog[i] * RAD);
+    ss[i + 1] = ss[i] + sog[i];
+  }
+  const meanDir = (a, b) => (Math.atan2(sn[b] - sn[a], cs[b] - cs[a]) / RAD + 360) % 360;
+  const meanSog = (a, b) => (ss[b] - ss[a]) / (b - a);
+
+  const [w0, w1] = TURN_WIN;
+  const peaks = [];
+  for (let i = 0; i < n; i++) {
+    const a0 = lowerBound(t, t[i] - w1), a1 = lowerBound(t, t[i] - w0);
+    const b0 = upperBound(t, t[i] + w0), b1 = upperBound(t, t[i] + w1);
+    if (a1 - a0 < 3 || b1 - b0 < 3) continue;
+    const before = meanDir(a0, a1), after = meanDir(b0, b1), change = angDiff(before, after), entry = meanSog(a0, a1);
+    if (Math.abs(change) < TURN_MIN_DEG || entry < TURN_MIN_KN) continue;
+    // One turn produces a run of qualifying fixes; keep the one with the largest course change.
+    const c = { i, before, after, change, entry };
+    const last = peaks[peaks.length - 1];
+    if (last && t[i] - last.tLast <= 90) {
+      last.tLast = t[i];
+      if (Math.abs(change) > Math.abs(last.c.change)) last.c = c;
+    } else {
+      peaks.push({ c, tLast: t[i] });
+    }
+  }
+
+  const turns = peaks.map(({ c }) => {
+    const tm = t[c.i];
+    const s0 = lowerBound(t, tm - w0), s1 = upperBound(t, tm + 2 * w0);
+    let iMin = s0;
+    for (let q = s0; q < s1; q++) if (sog[q] < sog[iMin]) iMin = q;
+    let iRec = -1;
+    for (let q = iMin; q < n && t[q] <= tm + RECOVER_CAP_S; q++) {
+      if (sog[q] >= RECOVER_FRAC * c.entry) { iRec = q; break; }
+    }
+    const iEnd = iRec >= 0 ? iRec : Math.max(s0, upperBound(t, tm + RECOVER_CAP_S) - 1);
+    let lossM = 0;
+    for (let q = s0 + 1; q <= iEnd; q++) lossM += (c.entry - sog[q]) / KN_PER_MPS * (t[q] - t[q - 1]);
+    return {
+      i: c.i, t: tm, before: c.before, after: c.after, change: c.change, entry: c.entry, min: sog[iMin],
+      recoverS: iRec >= 0 ? t[iRec] - t[iMin] : null, lossM: Math.max(0, lossM),
+    };
+  });
+
+  // Colour scale spans the 2nd-98th percentile of moving speeds so a few spikes don't wash it out.
+  const moving = Array.from(sog).filter(v => v > 1).sort((x, y) => x - y);
+  const pct = p => moving.length ? moving[Math.floor(p * (moving.length - 1))] : 0;
+  const lo = Math.floor(pct(0.02) * 2) / 2;
+  const hi = Math.max(lo + 1, Math.ceil(pct(0.98) * 2) / 2);
+
+  return { sog, vmc, cog, range, iTurn: hasTurn ? iTurn : -1, turns, lo, hi };
+}
+
+function legStats(i0, i1) {
+  const { t, cum } = track, { sog, cog, range, iTurn } = an;
+  const el = t[i1] - t[i0], sailed = (cum[i1] - cum[i0]) / M_PER_NM;
+  const straddles = iTurn > i0 && iTurn < i1;
+  let made;
+  if (iTurn < 0 || i1 <= iTurn) made = range[i1] - range[i0];
+  else if (i0 >= iTurn) made = range[i0] - range[i1];
+  else made = (range[iTurn] - range[i0]) + (range[iTurn] - range[i1]);
+  let maxSog = 0, cx = 0, cy = 0;
+  for (let q = i0; q <= i1; q++) {
+    if (sog[q] > maxSog) maxSog = sog[q];
+    if (q > i0) {
+      const w = sog[q] * (t[q] - t[q - 1]);
+      cx += w * Math.cos(cog[q] * RAD); cy += w * Math.sin(cog[q] * RAD);
+    }
+  }
+  const hours = el / 3600;
+  return {
+    from: t[i0], to: t[i1], el, sailed, maxSog, made, straddles,
+    avgSog: hours ? sailed / hours : 0, avgVmc: hours ? made / hours : 0,
+    cog: (Math.atan2(cy, cx) / RAD + 360) % 360, r0: range[i0], r1: range[i1],
+  };
+}
+
+// ---------- state ----------
+
+const settings = { smoothS: 20, tz: loadTz() };
+let track = null;      // parsed track: t, lat, lon, cum (metres)
+let an = null;         // analysis for the current smoothing and mark
+let mark = null;       // { lat, lon } that range and VMC are measured from
+let sel = null;        // [i0, i1] selected by zooming a chart, or null for the whole track
+let cur = 0;           // index of the fix under the cursor / replay position
+let charts = [];
+let building = false;
+let overChart = false;
+let playing = false;
+let picking = false;
+
+function loadTz() {
+  const browser = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  try {
+    const saved = localStorage.getItem('trackViewer.tz');
+    if (saved) { new Intl.DateTimeFormat('en-GB', { timeZone: saved }); return saved; }
+  } catch (e) { /* storage unavailable or saved zone no longer valid */ }
+  return browser;
+}
+
+const curRange = () => sel || [0, track.n - 1];
+const setStatus = msg => { $('status').textContent = msg; };
+
+// ---------- map ----------
+
+const map = L.map('map').setView([20, 0], 2);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+// Esri's ocean tiles stop at z10 in some regions (Cape Town included) and above that return a
+// "Map data not yet available" image. Stretch z10 up to z12, then switch to Esri's topo map for harbour detail.
+// The hand-over relies on whole-number zoom levels; with fractional zoom neither layer draws at 12.5.
+const OCEAN_MAX_Z = 12;
+const baseLayers = {
+  'Ocean (Esri)': L.layerGroup([
+    L.tileLayer(ESRI + 'Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxNativeZoom: 10, maxZoom: OCEAN_MAX_Z,
+      attribution: 'Tiles &copy; Esri &mdash; Sources: GEBCO, NOAA, CHS, OSU, UNH, CSUMB, National Geographic, DeLorme, NAVTEQ, and Esri',
+    }),
+    L.tileLayer(ESRI + 'Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 10, maxZoom: OCEAN_MAX_Z }),
+    L.tileLayer(ESRI + 'World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+      minZoom: OCEAN_MAX_Z + 1, maxNativeZoom: 17, maxZoom: 19,
+      attribution: 'Tiles &copy; Esri and the GIS User Community',
+    }),
+  ]),
+  'Bathymetry (GEBCO)': L.tileLayer.wms('https://wms.gebco.net/mapserv?', {
+    layers: 'GEBCO_LATEST', format: 'image/png', maxZoom: 19,
+    attribution: 'Bathymetry: GEBCO Compilation Group, GEBCO Grid',
+  }),
+  'Light grey (Esri)': L.layerGroup([
+    L.tileLayer(ESRI + 'Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxNativeZoom: 16, maxZoom: 19, attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+    }),
+    L.tileLayer(ESRI + 'Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 16, maxZoom: 19 }),
+  ]),
+  'Satellite (Esri)': L.tileLayer(ESRI + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxNativeZoom: 17, maxZoom: 19,
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+  }),
+};
+const seamarks = L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: 'Seamarks &copy; <a href="https://www.openseamap.org">OpenSeaMap</a> contributors',
+});
+baseLayers['Ocean (Esri)'].addTo(map);
+seamarks.addTo(map);
+L.control.layers(baseLayers, { 'Seamarks (OpenSeaMap)': seamarks }).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+
+// Selection glow sits under the track; turn and start/end dots sit above it.
+map.createPane('selection').style.zIndex = 390;
+map.createPane('track').style.zIndex = 420;
+map.createPane('points').style.zIndex = 450;
+const selRenderer = L.canvas({ pane: 'selection' });
+const trackRenderer = L.canvas({ pane: 'track' });
+const selLayer = L.layerGroup().addTo(map);
+const trackLayer = L.layerGroup().addTo(map);
+const pointLayer = L.layerGroup().addTo(map);
+
+const boat = L.marker([0, 0], {
+  icon: L.divIcon({
+    className: 'boat', iconSize: [22, 22], iconAnchor: [11, 11],
+    html: '<svg viewBox="-11 -11 22 22"><path d="M0,-10 L6,8 L0,4 L-6,8 Z" fill="#111" stroke="#fff" stroke-width="1.5"/></svg>',
+  }),
+  interactive: false, keyboard: false, zIndexOffset: 1000,
+});
+
+const markMarker = L.marker([0, 0], {
+  draggable: true, title: 'Mark (drag to move)', zIndexOffset: 900,
+  icon: L.divIcon({ className: 'mark-icon', html: '⚑', iconSize: [22, 22], iconAnchor: [5, 20] }),
+});
+markMarker.on('dragend', () => { const ll = markMarker.getLatLng(); setMark({ lat: ll.lat, lon: ll.lng }); });
+
+const info = L.control({ position: 'bottomleft' });
+info.onAdd = () => { const d = L.DomUtil.create('div', 'info'); d.hidden = true; return d; };
+info.addTo(map);
+
+const legend = L.control({ position: 'bottomright' });
+legend.onAdd = () => { const d = L.DomUtil.create('div', 'legend'); d.hidden = true; return d; };
+legend.addTo(map);
+
+// matplotlib "plasma"; the darkest blue end is skipped because it disappears on blue water.
+const PLASMA = ['#0d0887', '#4c02a1', '#7e03a8', '#a92395', '#cc4778', '#e56b5d', '#f89441', '#fdc328', '#f0f921']
+  .map(h => [1, 3, 5].map(o => parseInt(h.slice(o, o + 2), 16)));
+function speedColor(v) {
+  const f = 0.12 + 0.88 * clamp((v - an.lo) / (an.hi - an.lo), 0, 1);
+  const x = f * (PLASMA.length - 1), i = Math.min(PLASMA.length - 2, Math.floor(x)), r = x - i;
+  const c = PLASMA[i].map((ch, k) => Math.round(ch + (PLASMA[i + 1][k] - ch) * r));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function drawTrack() {
+  trackLayer.clearLayers();
+  const { n, lat, lon } = track, BINS = 12;
+  const all = Array.from(lat, (la, i) => [la, lon[i]]);
+  L.polyline(all, { renderer: trackRenderer, color: '#0b1d33', weight: 6, opacity: 0.5, interactive: false }).addTo(trackLayer);
+  // One polyline per run of fixes in the same speed bin, rather than one per GPS segment.
+  const binOf = i => Math.round(clamp((an.sog[i] - an.lo) / (an.hi - an.lo), 0, 1) * (BINS - 1));
+  let start = 0, bin = binOf(0);
+  for (let i = 1; i < n; i++) {
+    const b = binOf(i);
+    if (b === bin && i < n - 1) continue;
+    L.polyline(all.slice(start, i + 1), {
+      renderer: trackRenderer, color: speedColor(an.lo + (an.hi - an.lo) * bin / (BINS - 1)),
+      weight: 3.5, opacity: 1, interactive: false,
+    }).addTo(trackLayer);
+    start = i; bin = b;
+  }
+}
+
+function drawPoints() {
+  pointLayer.clearLayers();
+  const { n, t, lat, lon } = track;
+  const dot = (i, fill, radius, text) => L.circleMarker([lat[i], lon[i]], {
+    pane: 'points', radius, color: '#111', weight: 1.5, fillColor: fill, fillOpacity: 1,
+  }).bindTooltip(text).addTo(pointLayer);
+  an.turns.forEach(tn => {
+    dot(tn.i, '#fff', 4, `${fmtTime(tn.t)} · ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'} · ${Math.round(tn.lossM)} m lost`)
+      .on('click', () => { if (!picking) zoomToTurn(tn); });
+  });
+  dot(0, '#2e7d32', 6, `Start of track · ${fmtTime(t[0])}`);
+  dot(n - 1, '#c62828', 6, `End of track · ${fmtTime(t[n - 1])} · ${an.range[n - 1].toFixed(2)} nm from mark`);
+  if (an.iTurn >= 0) {
+    dot(an.iTurn, '#ef6c00', 7, `Turn-around · ${fmtTime(t[an.iTurn])} · ${an.range[an.iTurn].toFixed(2)} nm from mark`);
+  }
+}
+
+function drawSelection() {
+  selLayer.clearLayers();
+  if (!sel) return;
+  const pts = [];
+  for (let i = sel[0]; i <= sel[1]; i++) pts.push([track.lat[i], track.lon[i]]);
+  L.polyline(pts, { renderer: selRenderer, color: '#ffe14d', weight: 16, opacity: 0.6, interactive: false }).addTo(selLayer);
+}
+
+function updateLegend() {
+  const el = legend.getContainer();
+  el.hidden = false;
+  el.innerHTML = `<div>SOG, kn <span class="muted">(${settings.smoothS} s)</span></div><canvas width="180" height="10"></canvas>`
+    + `<div class="ticks"><span>≤${an.lo}</span><span>${((an.lo + an.hi) / 2).toFixed(1)}</span><span>≥${an.hi}</span></div>`;
+  const ctx = el.querySelector('canvas').getContext('2d');
+  for (let x = 0; x < 180; x++) { ctx.fillStyle = speedColor(an.lo + (an.hi - an.lo) * x / 179); ctx.fillRect(x, 0, 1, 10); }
+}
+
+function updateInfo(i) {
+  const el = info.getContainer(), { t, lat, lon } = track;
+  el.hidden = false;
+  el.innerHTML = `<b>${fmtTime(t[i])}</b> <span class="muted">+${fmtDur(t[i] - t[0])}</span><br>`
+    + `SOG <b>${an.sog[i].toFixed(2)}</b> kn &nbsp; VMC <b>${an.vmc[i].toFixed(2)}</b> kn<br>`
+    + `COG <b>${pad3(an.cog[i])}°</b> &nbsp; Range <b>${an.range[i].toFixed(2)}</b> nm<br>`
+    + `<span class="muted">${fmtDDM(lat[i], lon[i])}</span>`;
+}
+
+function fitMapTo(i0, i1) {
+  const pts = [];
+  for (let i = i0; i <= i1; i++) pts.push([track.lat[i], track.lon[i]]);
+  map.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 16 });
+}
+
+// Hovering near the track moves the cursor to the closest fix.
+let hoverLL = null, hoverRaf = 0;
+map.on('mousemove', e => {
+  if (!track || playing || picking) return;
+  hoverLL = e.latlng;
+  if (!hoverRaf) hoverRaf = requestAnimationFrame(doHover);
+});
+function doHover() {
+  hoverRaf = 0;
+  const { n, lat, lon } = track, la = hoverLL.lat, lo = hoverLL.lng, kx = Math.cos(la * RAD);
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < n; i++) {
+    const dx = (lon[i] - lo) * kx, dy = lat[i] - la, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  const p = map.latLngToContainerPoint([lat[best], lon[best]]);
+  if (p.distanceTo(map.latLngToContainerPoint(hoverLL)) <= 14) setCurrent(best, 'map');
+}
+
+map.on('click', e => {
+  if (!picking) return;
+  picking = false;
+  map.getContainer().classList.remove('picking');
+  setStatus('');
+  setMark({ lat: e.latlng.lat, lon: e.latlng.lng });
+});
+
+// ---------- charts ----------
+
+function marksPlugin() {
+  return {
+    hooks: {
+      draw: [u => {
+        if (!an) return;
+        const { ctx } = u, { left, top, width, height } = u.bbox, px = uPlot.pxRatio;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(left, top, width, height); ctx.clip();
+        const line = (ts, color, dash, w) => {
+          const x = Math.round(u.valToPos(ts, 'x', true)) + 0.5;
+          ctx.strokeStyle = color; ctx.lineWidth = w * px; ctx.setLineDash(dash.map(d => d * px));
+          ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + height); ctx.stroke();
+        };
+        an.turns.forEach(tn => line(tn.t, 'rgba(0,0,0,.35)', [3, 3], 1));
+        if (an.iTurn >= 0) line(track.t[an.iTurn], '#ef6c00', [], 1.5);
+        ctx.restore();
+      }],
+    },
+  };
+}
+
+function buildCharts() {
+  const keep = sel ? [track.t[sel[0]], track.t[sel[1]]] : null;
+  charts.forEach(u => u.destroy());
+  charts = [];
+  const el = $('charts');
+  el.textContent = '';
+  const width = chartWidth(), x = track.t;
+
+  const timeLegend = (u, ts) => ts == null ? '–' : fmtTime(ts);
+  const num = (unit, dp) => (u, v) => v == null ? '–' : v.toFixed(dp) + unit;
+  const timeAxis = () => ({ values: (u, splits, ax, space, incr) => splits.map(v => incr < 60 ? fmtTime(v) : fmtHM(v)) });
+  const blankTimeAxis = () => ({ size: 6, values: (u, splits) => splits.map(() => '') });
+  const yAxis = (label, extra) => ({ label, size: 52, ...extra });
+  const base = (height, opts) => ({
+    width, height,
+    tzDate: ts => uPlot.tzDate(new Date(ts * 1e3), settings.tz),
+    cursor: { sync: { key: 'track', scales: ['x', null] }, drag: { x: true, y: false, dist: 5 } },
+    scales: { x: { time: true } },
+    plugins: [marksPlugin()],
+    ...opts,
+  });
+  // A course plot jumps between 359° and 0°; break the line there rather than draw a vertical stroke.
+  const cogData = Array.from(an.cog, (v, i) => i && Math.abs(v - an.cog[i - 1]) > 180 ? null : v);
+
+  const defs = [
+    [base(130, {
+      series: [
+        { label: 'Time', value: timeLegend },
+        { label: 'SOG', stroke: '#1565c0', width: 1.5, value: num(' kn', 2) },
+        { label: 'VMC', stroke: '#ef6c00', width: 1.2, value: num(' kn', 2) },
+      ],
+      axes: [blankTimeAxis(), yAxis('kn')],
+      hooks: {
+        // uPlot also fires this when it redraws after a zoom, so only follow it while the mouse is on a chart.
+        setCursor: [u => {
+          if (overChart && !playing && u.cursor.idx != null && u.cursor.left >= 0) setCurrent(u.cursor.idx, 'chart');
+        }],
+        setScale: [(u, key) => { if (key === 'x' && !building) onRange(u.scales.x.min, u.scales.x.max); }],
+      },
+    }), [x, an.sog, an.vmc]],
+    [base(90, {
+      class: 'nox',
+      series: [{ value: timeLegend }, { label: 'COG', stroke: '#6a1b9a', width: 1, value: (u, v) => v == null ? '–' : pad3(v) + '°' }],
+      scales: { x: { time: true }, y: { range: [0, 360] } },
+      axes: [blankTimeAxis(), yAxis('°', { space: 14, incrs: [90, 180], values: (u, s) => s.map(v => v + '°') })],
+    }), [x, cogData]],
+    [base(100, {
+      class: 'nox',
+      series: [{ value: timeLegend }, { label: 'Range from mark', stroke: '#2e7d32', width: 1.5, value: num(' nm', 2) }],
+      axes: [timeAxis(), yAxis('nm')],
+    }), [x, an.range]],
+  ];
+
+  building = true;
+  try {
+    defs.forEach(([opts, data]) => charts.push(new uPlot(opts, data, el)));
+  } finally {
+    building = false;
+  }
+  if (keep) setRange(keep[0], keep[1]);
+  else onRange(x[0], x[x.length - 1]);
+}
+
+function setRange(min, max) {
+  charts.forEach(u => u.setScale('x', { min, max }));
+}
+
+// Runs from the first chart's setScale hook, i.e. after uPlot has applied a zoom (it does so on a microtask).
+function onRange(min, max) {
+  const { t, n } = track;
+  const i0 = clamp(lowerBound(t, min), 0, n - 1), i1 = clamp(upperBound(t, max) - 1, 0, n - 1);
+  sel = (i0 <= 0 && i1 >= n - 1) || i1 <= i0 ? null : [i0, i1];
+  const [a, b] = curRange(), scrub = $('scrub');
+  scrub.min = a; scrub.max = b; scrub.value = clamp(cur, a, b);
+  $('fitSel').disabled = !sel;
+  drawSelection();
+  renderStats();
+  // The other charts apply the same zoom on their own microtasks; re-place the cursors once all have.
+  requestAnimationFrame(() => syncChartCursors(cur));
+}
+
+function syncChartCursors(i) {
+  for (const u of charts) {
+    const xPos = u.valToPos(track.t[i], 'x'), inside = xPos >= 0 && xPos <= u.over.clientWidth;
+    u.setCursor({ left: inside ? xPos : -10, top: inside ? u.over.clientHeight / 2 : -10 }, false, false);
+  }
+}
+
+// #charts is hidden while empty, so size the charts from the column they sit in.
+const chartWidth = () => $('left').clientWidth - 16;
+new ResizeObserver(() => {
+  const w = chartWidth();
+  charts.forEach(u => { if (w > 0 && u.width !== w) u.setSize({ width: w, height: u.height }); });
+}).observe($('left'));
+
+// ---------- side panel ----------
+
+function renderStats() {
+  const cols = [['Whole', 0, track.n - 1]];
+  if (an.iTurn >= 0) cols.push(['Out', 0, an.iTurn], ['Back', an.iTurn, track.n - 1]);
+  if (sel) cols.push(['Selection', sel[0], sel[1]]);
+  const S = cols.map(c => legStats(c[1], c[2]));
+  const rows = [
+    ['From', s => fmtHM(s.from)],
+    ['To', s => fmtHM(s.to)],
+    ['Elapsed', s => fmtDur(s.el)],
+    ['Sailed', s => s.sailed.toFixed(2)],
+    ['Avg SOG', s => s.avgSog.toFixed(2)],
+    [`Max SOG (${settings.smoothS} s)`, s => s.maxSog.toFixed(2)],
+    ['Made good', s => s.made.toFixed(2)],
+    ['Avg VMC', s => s.avgVmc.toFixed(2)],
+    ['Efficiency', s => s.sailed > 0 ? Math.round(100 * s.made / s.sailed) + '%' : '–'],
+    ['Mean COG', s => s.straddles ? '–' : pad3(s.cog) + '°'],
+    ['Range at start', s => s.r0.toFixed(2)],
+    ['Range at end', s => s.r1.toFixed(2)],
+  ];
+  const table = $('stats');
+  table.textContent = '';
+  const cell = (tag, text, isSel) => { const c = document.createElement(tag); c.textContent = text; if (isSel) c.className = 'sel'; return c; };
+  const head = table.createTHead().insertRow();
+  head.append(cell('th', ''), ...cols.map(c => cell('th', c[0], c[0] === 'Selection')));
+  const body = table.createTBody();
+  for (const [label, f] of rows) {
+    body.insertRow().append(cell('td', label), ...S.map((s, k) => cell('td', f(s), cols[k][0] === 'Selection')));
+  }
+}
+
+function renderTurns() {
+  const table = $('turns');
+  table.textContent = '';
+  $('turnsNote').textContent = an.turns.length
+    ? `Course changes of ${TURN_MIN_DEG}° or more above ${TURN_MIN_KN} kn. Recover is the time from the slowest point until SOG is back to `
+      + `${RECOVER_FRAC * 100}% of entry speed. Loss is the distance given up compared with holding entry speed until then.`
+    : `No course changes of ${TURN_MIN_DEG}° or more found.`;
+  if (!an.turns.length) return;
+  const head = table.createTHead().insertRow();
+  for (const h of ['Time', 'Course', 'Turn', 'Entry', 'Min', 'Recover', 'Loss']) head.append(Object.assign(document.createElement('th'), { textContent: h }));
+  const body = table.createTBody();
+  for (const tn of an.turns) {
+    const tr = body.insertRow();
+    const vals = [
+      fmtTime(tn.t),
+      `${pad3(tn.before)}→${pad3(tn.after)}`,
+      `${Math.round(Math.abs(tn.change))}° ${tn.change > 0 ? 'S' : 'P'}`,
+      tn.entry.toFixed(1),
+      tn.min.toFixed(1),
+      tn.recoverS == null ? `>${RECOVER_CAP_S / 60}m` : fmtDur(tn.recoverS),
+      `${Math.round(tn.lossM)} m`,
+    ];
+    for (const v of vals) tr.insertCell().textContent = v;
+    tr.title = `Turned ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'}. Click to zoom.`;
+    tr.onclick = () => zoomToTurn(tn);
+  }
+}
+
+function zoomToTurn(tn) {
+  const t = track.t, min = tn.t - 120, max = tn.t + 300;
+  stopPlay();
+  setRange(min, max);
+  fitMapTo(lowerBound(t, min), Math.max(0, upperBound(t, max) - 1));
+  setCurrent(tn.i, 'turn');
+}
+
+// ---------- cursor, replay, mark ----------
+
+function setCurrent(i, source) {
+  const { lat, lon } = track;
+  cur = i;
+  boat.setLatLng([lat[i], lon[i]]);
+  if (!map.hasLayer(boat)) boat.addTo(map);
+  const svg = boat.getElement()?.querySelector('svg');
+  if (svg) svg.style.transform = `rotate(${an.cog[i]}deg)`;
+  updateInfo(i);
+  if (source !== 'chart') syncChartCursors(i);
+  if (source !== 'scrub') $('scrub').value = i;
+  if (source === 'play' && $('follow').checked && !map.getBounds().pad(-0.2).contains([lat[i], lon[i]])) {
+    map.panTo([lat[i], lon[i]], { animate: false });
+  }
+}
+
+let playT = 0, lastFrame = 0;
+function startPlay() {
+  const [a, b] = curRange();
+  const i = cur >= a && cur < b ? cur : a;
+  playT = track.t[i];
+  playing = true;
+  lastFrame = performance.now();
+  $('play').textContent = '❚❚ Pause';
+  setCurrent(i, 'play');
+  requestAnimationFrame(stepPlay);
+}
+function stopPlay() {
+  playing = false;
+  $('play').textContent = '▶ Play';
+}
+function stepPlay(now) {
+  if (!playing) return;
+  playT += (now - lastFrame) / 1000 * +$('rate').value;
+  lastFrame = now;
+  const [a, b] = curRange();
+  if (playT >= track.t[b]) { setCurrent(b, 'play'); stopPlay(); return; }
+  const i = clamp(upperBound(track.t, playT) - 1, a, b);
+  if (i !== cur) setCurrent(i, 'play');
+  requestAnimationFrame(stepPlay);
+}
+
+function setMark(m) {
+  mark = m;
+  markMarker.setLatLng([m.lat, m.lon]);
+  if (!map.hasLayer(markMarker)) markMarker.addTo(map);
+  $('markInput').value = fmtDDM(m.lat, m.lon);
+  recompute();
+}
+
+function recompute() {
+  stopPlay();
+  an = analyse(track, settings.smoothS, mark);
+  $('trackName').textContent = `${track.name} · ${fmtDate(track.t[0])}`;
+  drawTrack();
+  drawPoints();
+  updateLegend();
+  renderTurns();
+  buildCharts();
+  setCurrent(clamp(cur, 0, track.n - 1), 'recompute');
+}
+
+function loadGpxText(text, fileName) {
+  try {
+    const parsed = parseGpx(text);
+    stopPlay();
+    track = buildTrack(parsed, fileName);
+    sel = null;
+    cur = 0;
+    $('empty').hidden = true;
+    for (const id of ['play', 'scrub', 'markInput', 'pickMark', 'resetMark']) $(id).disabled = false;
+    setMark({ lat: track.lat[0], lon: track.lon[0] });
+    fitMapTo(0, track.n - 1);
+    setStatus('');
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message);
+  }
+}
+window.loadGpxText = loadGpxText;   // handy from the dev console
+
+async function openFile(f) {
+  setStatus('Reading…');
+  loadGpxText(await f.text(), f.name.replace(/\.gpx$/i, ''));
+}
+
+// ---------- controls ----------
+
+$('charts').addEventListener('mouseenter', () => { overChart = true; });
+$('charts').addEventListener('mouseleave', () => { overChart = false; });
+$('file').onchange = e => { const f = e.target.files[0]; if (f) openFile(f); e.target.value = ''; };
+$('play').onclick = () => (playing ? stopPlay() : startPlay());
+$('scrub').oninput = e => { const i = +e.target.value; setCurrent(i, 'scrub'); if (playing) playT = track.t[i]; };
+$('smooth').onchange = e => { settings.smoothS = +e.target.value; if (track) recompute(); };
+$('fitSel').onclick = () => { if (sel) fitMapTo(sel[0], sel[1]); };
+$('resetMark').onclick = () => setMark({ lat: track.lat[0], lon: track.lon[0] });
+$('pickMark').onclick = () => {
+  picking = true;
+  map.getContainer().classList.add('picking');
+  setStatus('Click the map to place the mark.');
+};
+$('markInput').onchange = e => {
+  const m = parseCoord(e.target.value);
+  if (m) { setStatus(''); setMark(m); }
+  else { setStatus(`Couldn't read that position. Try 33 51.907'S 018 25.463'E or -33.865, 18.424.`); e.target.value = fmtDDM(mark.lat, mark.lon); }
+};
+
+(function initTzSelect() {
+  const tzSel = $('tz');
+  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+  for (const z of new Set(['UTC', settings.tz, ...zones])) tzSel.add(new Option(z, z));
+  tzSel.value = settings.tz;
+  tzSel.onchange = () => {
+    settings.tz = tzSel.value;
+    try { localStorage.setItem('trackViewer.tz', settings.tz); } catch (e) { /* storage unavailable */ }
+    fmtCache.clear();
+    if (track) recompute();
+  };
+})();
+
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+let dragDepth = 0;
+window.addEventListener('dragenter', e => { if (hasFiles(e)) { e.preventDefault(); dragDepth++; $('drop').classList.add('show'); } });
+window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener('dragleave', e => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; $('drop').classList.remove('show'); } });
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  $('drop').classList.remove('show');
+  const f = e.dataTransfer.files[0];
+  if (f) openFile(f);
+});
+window.addEventListener('error', e => setStatus(`Error: ${e.message}`));
+</script>
+</body>
+</html>
