@@ -15,7 +15,7 @@ The page needs internet access for map tiles and for its two libraries, Leaflet 
 
 ## How the numbers are worked out
 
-- GPS fixes are 1–9 s apart and jitter by a few metres. SOG therefore comes from the straight-line distance across a time window centred on each fix (6–60 s, set by **Smoothing**). COG uses the same window, or 20 s if the window is shorter.
+- GPS fixes are 1–10 s apart and jitter by a few metres. SOG therefore comes from the straight-line distance across a time window centred on each fix (6–60 s, set by **Smoothing**). COG uses the same window, or 20 s if the window is shorter.
 - **Made good** is the straight-line distance from the start to the end of a period. **Efficiency** is made good divided by distance sailed. Made good, efficiency and **mean course** are left blank when the boat sailed in very different directions during the period, such as over a whole out-and-back race. A beat with tacks still counts as one direction.
 - A **turn** is a change of at least 50° between the mean course 20–60 s before a fix and 20–60 s after it, entered at 2 kn or more. **Recover** is the time from the slowest point until SOG is back to 90% of entry speed. **Loss** is the distance given up compared with holding entry speed until then.
 
@@ -27,6 +27,12 @@ The tile services are free for personal, non-commercial use with attribution:
 - GEBCO WMS (`GEBCO_LATEST`, shaded relief).
 - Esri World Light Gray Canvas and World Imagery.
 - OpenSeaMap seamarks.
+
+## Development
+
+- [`docs/DESIGN.md`](docs/DESIGN.md) covers the design decisions and their reasons, how the code fits together, test tracks with reference numbers, known issues and the backlog. Start there when resuming work.
+- `test/check.py FILE.gpx...` loads tracks into the page in headless Chrome and prints what it computed (`--screenshot DIR` also saves screenshots).
+- GPX files are personal location history and are kept out of git by `.gitignore`.
 
 ## Ideas for later
 
