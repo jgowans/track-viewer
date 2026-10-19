@@ -49,7 +49,10 @@
   aside .sel { background: #fff3c4; }
   #turns tbody tr { cursor: pointer; }
   #turns tbody tr:hover { background: #e3edf7; }
-  #markInput { width: 100%; padding: 3px 5px; }
+  #statsWrap { overflow-x: auto; }
+  #stats thead th.pin { cursor: pointer; }
+  #stats thead th.pin:hover { background: #e3edf7; }
+  #stats thead button { padding: 0 4px; margin-left: 3px; font-size: 11px; line-height: 1.3; }
   .row { display: flex; gap: 6px; margin-top: 5px; }
   .muted { color: #66788a; }
   aside p { margin: 5px 0; }
@@ -60,8 +63,6 @@
   .legend canvas { display: block; width: 180px; height: 10px; margin: 3px 0 1px; }
   .legend .ticks { display: flex; justify-content: space-between; }
   .boat svg { width: 22px; height: 22px; display: block; overflow: visible; }
-  .mark-icon { font-size: 22px; line-height: 22px; color: #111; text-shadow: 0 0 2px #fff, 0 0 3px #fff; cursor: move; }
-  .picking, .picking .leaflet-interactive { cursor: crosshair !important; }
   #drop { position: fixed; inset: 0; background: rgba(15,42,68,.6); color: #fff; font-size: 22px; display: none; align-items: center; justify-content: center; z-index: 5000; pointer-events: none; }
   #drop.show { display: flex; }
 </style>
@@ -84,7 +85,7 @@
     <label title="Keep the boat in view during replay"><input type="checkbox" id="follow"> Follow</label>
   </span>
   <span class="group">
-    <label title="Time window used to compute SOG, VMC and COG from the GPS fixes">Smoothing
+    <label title="Time window used to compute SOG and COG from the GPS fixes">Smoothing
       <select id="smooth">
         <option value="6">6 s</option>
         <option value="10">10 s</option>
@@ -107,18 +108,13 @@
   </section>
 
   <aside>
-    <h2>Mark</h2>
-    <input id="markInput" spellcheck="false" placeholder="33 51.907'S  018 25.463'E" disabled>
+    <h2>Periods</h2>
+    <div id="statsWrap"><table id="stats"></table></div>
     <div class="row">
-      <button id="pickMark" disabled>Pick on map</button>
-      <button id="resetMark" disabled>Use first point</button>
+      <button id="pin" disabled title="Keep this period as a column to compare against others">Pin selection</button>
+      <button id="fitSel" disabled>Fit map to selection</button>
     </div>
-    <p class="muted">Range and VMC are measured from this point. Drag the ⚑ on the map, pick a point, or type a position.</p>
-
-    <h2>Legs</h2>
-    <table id="stats"></table>
-    <p class="muted">Distances in nm, speeds in kn. Made good is distance away from the mark until the turn-around, then back toward it. Efficiency is made good divided by sailed.</p>
-    <div class="row"><button id="fitSel" disabled>Fit map to selection</button></div>
+    <p class="muted">Distances in nm, speeds in kn. Made good is the straight line from the start to the end of the period. Efficiency is made good divided by sailed. Both, and mean COG, are blank when the boat sailed in very different directions.</p>
 
     <h2>Turns</h2>
     <table id="turns"></table>
@@ -127,7 +123,8 @@
     <h2>How to use</h2>
     <ul>
       <li>Hover the track or the charts to read time, speed and course at that moment.</li>
-      <li>Drag across a chart to select a period. The map highlights it, Legs adds a Selection column, and Play replays only that period. Double-click a chart to reset.</li>
+      <li>Drag across a chart to select a period. The map highlights it, Periods adds a Selection column, and Play replays only that period. Double-click a chart to reset.</li>
+      <li>Pin a selection to keep it as a column, for example the outbound and return legs. Click a pinned column's heading to select that period again.</li>
       <li>Click a row in Turns, or a white dot on the track, to zoom to that turn.</li>
     </ul>
   </aside>
@@ -218,22 +215,6 @@ function fmtDDM(lat, lon) {
   return `${part(lat, 2, 'N', 'S')}  ${part(lon, 3, 'E', 'W')}`;
 }
 
-// Accepts "33 51.907'S 018 25.463'E", "33°51.907'S, 18°25.463'E" or "-33.865, 18.424".
-function parseCoord(s) {
-  s = s.trim();
-  let m = s.match(/^(-?\d+(?:\.\d+)?)\s*[,;\s]\s*(-?\d+(?:\.\d+)?)$/);
-  let lat, lon;
-  if (m) {
-    lat = +m[1]; lon = +m[2];
-  } else {
-    m = s.match(/^(\d{1,2})[°\s]+(\d{1,2}(?:\.\d+)?)'?\s*([NS])[\s,;]+(\d{1,3})[°\s]+(\d{1,2}(?:\.\d+)?)'?\s*([EW])$/i);
-    if (!m) return null;
-    lat = (+m[1] + m[2] / 60) * (/s/i.test(m[3]) ? -1 : 1);
-    lon = (+m[4] + m[5] / 60) * (/w/i.test(m[6]) ? -1 : 1);
-  }
-  return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
-}
-
 // ---------- GPX parsing and analysis ----------
 
 function parseGpx(text) {
@@ -265,15 +246,9 @@ function buildTrack(parsed, fileName) {
   return { name: parsed.name || fileName || 'Track', n, t, lat, lon, cum };
 }
 
-function analyse(tr, smoothS, mark) {
+function analyse(tr, smoothS) {
   const { n, t, lat, lon } = tr;
-  const sog = new Float64Array(n), vmc = new Float64Array(n), cog = new Float64Array(n), range = new Float64Array(n);
-  for (let i = 0; i < n; i++) range[i] = distM(mark.lat, mark.lon, lat[i], lon[i]) / M_PER_NM;
-
-  // The turn-around is the furthest point from the mark, if the track then comes back meaningfully closer.
-  let iTurn = 0;
-  for (let i = 1; i < n; i++) if (range[i] > range[iTurn]) iTurn = i;
-  const hasTurn = iTurn > 0 && range[iTurn] - range[n - 1] > 0.25 * range[iTurn];
+  const sog = new Float64Array(n), cog = new Float64Array(n);
 
   // GPS fixes are 1-9 s apart and jitter by a few metres, so point-to-point speeds are noisy.
   // Speed and course come from the chord across a time window centred on each fix instead.
@@ -290,7 +265,6 @@ function analyse(tr, smoothS, mark) {
   for (let i = 0; i < n; i++) {
     const [a, b] = sogWin(i), dt = t[b] - t[a];
     sog[i] = distM(lat[a], lon[a], lat[b], lon[b]) / dt * KN_PER_MPS;
-    vmc[i] = (hasTurn && i > iTurn ? -1 : 1) * (range[b] - range[a]) / dt * 3600;
     const [c, d] = cogWin(i);
     cog[i] = bearingDeg(lat[c], lon[c], lat[d], lon[d]);
   }
@@ -348,30 +322,30 @@ function analyse(tr, smoothS, mark) {
   const lo = Math.floor(pct(0.02) * 2) / 2;
   const hi = Math.max(lo + 1, Math.ceil(pct(0.98) * 2) / 2);
 
-  return { sog, vmc, cog, range, iTurn: hasTurn ? iTurn : -1, turns, lo, hi };
+  return { sog, cog, turns, lo, hi };
 }
 
 function legStats(i0, i1) {
-  const { t, cum } = track, { sog, cog, range, iTurn } = an;
+  const { t, lat, lon, cum } = track, { sog, cog, turns } = an;
   const el = t[i1] - t[i0], sailed = (cum[i1] - cum[i0]) / M_PER_NM;
-  const straddles = iTurn > i0 && iTurn < i1;
-  let made;
-  if (iTurn < 0 || i1 <= iTurn) made = range[i1] - range[i0];
-  else if (i0 >= iTurn) made = range[i0] - range[i1];
-  else made = (range[iTurn] - range[i0]) + (range[iTurn] - range[i1]);
-  let maxSog = 0, cx = 0, cy = 0;
+  const made = distM(lat[i0], lon[i0], lat[i1], lon[i1]) / M_PER_NM;
+  let maxSog = 0, cx = 0, cy = 0, w = 0;
   for (let q = i0; q <= i1; q++) {
     if (sog[q] > maxSog) maxSog = sog[q];
     if (q > i0) {
-      const w = sog[q] * (t[q] - t[q - 1]);
-      cx += w * Math.cos(cog[q] * RAD); cy += w * Math.sin(cog[q] * RAD);
+      const wq = sog[q] * (t[q] - t[q - 1]);
+      cx += wq * Math.cos(cog[q] * RAD); cy += wq * Math.sin(cog[q] * RAD); w += wq;
     }
   }
   const hours = el / 3600;
+  // A straight line or a mean course only means something if the boat mostly sailed one way,
+  // e.g. not over a whole out-and-back race.
+  const oneWay = w > 0 && Math.hypot(cx, cy) / w >= 0.5;
   return {
-    from: t[i0], to: t[i1], el, sailed, maxSog, made, straddles,
-    avgSog: hours ? sailed / hours : 0, avgVmc: hours ? made / hours : 0,
-    cog: (Math.atan2(cy, cx) / RAD + 360) % 360, r0: range[i0], r1: range[i1],
+    from: t[i0], to: t[i1], el, sailed, maxSog, made: oneWay ? made : null,
+    avgSog: hours ? sailed / hours : 0,
+    cog: oneWay ? (Math.atan2(cy, cx) / RAD + 360) % 360 : null,
+    turns: turns.filter(tn => tn.i >= i0 && tn.i <= i1).length,
   };
 }
 
@@ -379,15 +353,14 @@ function legStats(i0, i1) {
 
 const settings = { smoothS: 20, tz: loadTz() };
 let track = null;      // parsed track: t, lat, lon, cum (metres)
-let an = null;         // analysis for the current smoothing and mark
-let mark = null;       // { lat, lon } that range and VMC are measured from
+let an = null;         // analysis for the current smoothing
 let sel = null;        // [i0, i1] selected by zooming a chart, or null for the whole track
+let pins = [];         // [i0, i1] periods kept for comparison
 let cur = 0;           // index of the fix under the cursor / replay position
 let charts = [];
 let building = false;
 let overChart = false;
 let playing = false;
-let picking = false;
 
 function loadTz() {
   const browser = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -462,12 +435,6 @@ const boat = L.marker([0, 0], {
   interactive: false, keyboard: false, zIndexOffset: 1000,
 });
 
-const markMarker = L.marker([0, 0], {
-  draggable: true, title: 'Mark (drag to move)', zIndexOffset: 900,
-  icon: L.divIcon({ className: 'mark-icon', html: '⚑', iconSize: [22, 22], iconAnchor: [5, 20] }),
-});
-markMarker.on('dragend', () => { const ll = markMarker.getLatLng(); setMark({ lat: ll.lat, lon: ll.lng }); });
-
 const info = L.control({ position: 'bottomleft' });
 info.onAdd = () => { const d = L.DomUtil.create('div', 'info'); d.hidden = true; return d; };
 info.addTo(map);
@@ -513,13 +480,10 @@ function drawPoints() {
   }).bindTooltip(text).addTo(pointLayer);
   an.turns.forEach(tn => {
     dot(tn.i, '#fff', 4, `${fmtTime(tn.t)} · ${Math.round(Math.abs(tn.change))}° to ${tn.change > 0 ? 'starboard' : 'port'} · ${Math.round(tn.lossM)} m lost`)
-      .on('click', () => { if (!picking) zoomToTurn(tn); });
+      .on('click', () => zoomToTurn(tn));
   });
   dot(0, '#2e7d32', 6, `Start of track · ${fmtTime(t[0])}`);
-  dot(n - 1, '#c62828', 6, `End of track · ${fmtTime(t[n - 1])} · ${an.range[n - 1].toFixed(2)} nm from mark`);
-  if (an.iTurn >= 0) {
-    dot(an.iTurn, '#ef6c00', 7, `Turn-around · ${fmtTime(t[an.iTurn])} · ${an.range[an.iTurn].toFixed(2)} nm from mark`);
-  }
+  dot(n - 1, '#c62828', 6, `End of track · ${fmtTime(t[n - 1])}`);
 }
 
 function drawSelection() {
@@ -543,8 +507,7 @@ function updateInfo(i) {
   const el = info.getContainer(), { t, lat, lon } = track;
   el.hidden = false;
   el.innerHTML = `<b>${fmtTime(t[i])}</b> <span class="muted">+${fmtDur(t[i] - t[0])}</span><br>`
-    + `SOG <b>${an.sog[i].toFixed(2)}</b> kn &nbsp; VMC <b>${an.vmc[i].toFixed(2)}</b> kn<br>`
-    + `COG <b>${pad3(an.cog[i])}°</b> &nbsp; Range <b>${an.range[i].toFixed(2)}</b> nm<br>`
+    + `SOG <b>${an.sog[i].toFixed(2)}</b> kn &nbsp; COG <b>${pad3(an.cog[i])}°</b><br>`
     + `<span class="muted">${fmtDDM(lat[i], lon[i])}</span>`;
 }
 
@@ -557,7 +520,7 @@ function fitMapTo(i0, i1) {
 // Hovering near the track moves the cursor to the closest fix.
 let hoverLL = null, hoverRaf = 0;
 map.on('mousemove', e => {
-  if (!track || playing || picking) return;
+  if (!track || playing) return;
   hoverLL = e.latlng;
   if (!hoverRaf) hoverRaf = requestAnimationFrame(doHover);
 });
@@ -572,14 +535,6 @@ function doHover() {
   const p = map.latLngToContainerPoint([lat[best], lon[best]]);
   if (p.distanceTo(map.latLngToContainerPoint(hoverLL)) <= 14) setCurrent(best, 'map');
 }
-
-map.on('click', e => {
-  if (!picking) return;
-  picking = false;
-  map.getContainer().classList.remove('picking');
-  setStatus('');
-  setMark({ lat: e.latlng.lat, lon: e.latlng.lng });
-});
 
 // ---------- charts ----------
 
@@ -597,7 +552,6 @@ function marksPlugin() {
           ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + height); ctx.stroke();
         };
         an.turns.forEach(tn => line(tn.t, 'rgba(0,0,0,.35)', [3, 3], 1));
-        if (an.iTurn >= 0) line(track.t[an.iTurn], '#ef6c00', [], 1.5);
         ctx.restore();
       }],
     },
@@ -633,7 +587,6 @@ function buildCharts() {
       series: [
         { label: 'Time', value: timeLegend },
         { label: 'SOG', stroke: '#1565c0', width: 1.5, value: num(' kn', 2) },
-        { label: 'VMC', stroke: '#ef6c00', width: 1.2, value: num(' kn', 2) },
       ],
       axes: [blankTimeAxis(), yAxis('kn')],
       hooks: {
@@ -643,18 +596,13 @@ function buildCharts() {
         }],
         setScale: [(u, key) => { if (key === 'x' && !building) onRange(u.scales.x.min, u.scales.x.max); }],
       },
-    }), [x, an.sog, an.vmc]],
-    [base(90, {
+    }), [x, an.sog]],
+    [base(110, {
       class: 'nox',
       series: [{ value: timeLegend }, { label: 'COG', stroke: '#6a1b9a', width: 1, value: (u, v) => v == null ? '–' : pad3(v) + '°' }],
       scales: { x: { time: true }, y: { range: [0, 360] } },
-      axes: [blankTimeAxis(), yAxis('°', { space: 14, incrs: [90, 180], values: (u, s) => s.map(v => v + '°') })],
+      axes: [timeAxis(), yAxis('°', { space: 14, incrs: [90, 180], values: (u, s) => s.map(v => v + '°') })],
     }), [x, cogData]],
-    [base(100, {
-      class: 'nox',
-      series: [{ value: timeLegend }, { label: 'Range from mark', stroke: '#2e7d32', width: 1.5, value: num(' nm', 2) }],
-      axes: [timeAxis(), yAxis('nm')],
-    }), [x, an.range]],
   ];
 
   building = true;
@@ -679,6 +627,7 @@ function onRange(min, max) {
   const [a, b] = curRange(), scrub = $('scrub');
   scrub.min = a; scrub.max = b; scrub.value = clamp(cur, a, b);
   $('fitSel').disabled = !sel;
+  $('pin').disabled = !sel;
   drawSelection();
   renderStats();
   // The other charts apply the same zoom on their own microtasks; re-place the cursors once all have.
@@ -702,10 +651,12 @@ new ResizeObserver(() => {
 // ---------- side panel ----------
 
 function renderStats() {
-  const cols = [['Whole', 0, track.n - 1]];
-  if (an.iTurn >= 0) cols.push(['Out', 0, an.iTurn], ['Back', an.iTurn, track.n - 1]);
-  if (sel) cols.push(['Selection', sel[0], sel[1]]);
-  const S = cols.map(c => legStats(c[1], c[2]));
+  const { t, n } = track;
+  // Columns: whole track, pinned periods in time order, then the live selection.
+  const cols = [{ label: 'Whole', i0: 0, i1: n - 1 }];
+  [...pins].sort((p, q) => p[0] - q[0]).forEach((p, k) => cols.push({ label: `#${k + 1}`, i0: p[0], i1: p[1], pin: p }));
+  if (sel) cols.push({ label: 'Selection', i0: sel[0], i1: sel[1], isSel: true });
+  const S = cols.map(c => legStats(c.i0, c.i1));
   const rows = [
     ['From', s => fmtHM(s.from)],
     ['To', s => fmtHM(s.to)],
@@ -713,21 +664,36 @@ function renderStats() {
     ['Sailed', s => s.sailed.toFixed(2)],
     ['Avg SOG', s => s.avgSog.toFixed(2)],
     [`Max SOG (${settings.smoothS} s)`, s => s.maxSog.toFixed(2)],
-    ['Made good', s => s.made.toFixed(2)],
-    ['Avg VMC', s => s.avgVmc.toFixed(2)],
-    ['Efficiency', s => s.sailed > 0 ? Math.round(100 * s.made / s.sailed) + '%' : '–'],
-    ['Mean COG', s => s.straddles ? '–' : pad3(s.cog) + '°'],
-    ['Range at start', s => s.r0.toFixed(2)],
-    ['Range at end', s => s.r1.toFixed(2)],
+    ['Made good', s => s.made == null ? '–' : s.made.toFixed(2)],
+    ['Efficiency', s => s.made == null || !s.sailed ? '–' : Math.round(100 * s.made / s.sailed) + '%'],
+    ['Mean COG', s => s.cog == null ? '–' : pad3(s.cog) + '°'],
+    ['Turns', s => String(s.turns)],
   ];
   const table = $('stats');
   table.textContent = '';
-  const cell = (tag, text, isSel) => { const c = document.createElement(tag); c.textContent = text; if (isSel) c.className = 'sel'; return c; };
+  const cell = (tag, text, c) => {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    if (c?.isSel) el.className = 'sel';
+    return el;
+  };
   const head = table.createTHead().insertRow();
-  head.append(cell('th', ''), ...cols.map(c => cell('th', c[0], c[0] === 'Selection')));
+  head.append(cell('th', ''));
+  for (const c of cols) {
+    const th = cell('th', c.label, c);
+    if (c.pin) {
+      th.className = 'pin';
+      th.title = `${fmtTime(t[c.i0])}–${fmtTime(t[c.i1])}. Click to select this period again.`;
+      th.onclick = () => setRange(t[c.i0], t[c.i1]);
+      const del = Object.assign(document.createElement('button'), { textContent: '×', title: 'Unpin' });
+      del.onclick = e => { e.stopPropagation(); pins = pins.filter(p => p !== c.pin); renderStats(); };
+      th.append(del);
+    }
+    head.append(th);
+  }
   const body = table.createTBody();
   for (const [label, f] of rows) {
-    body.insertRow().append(cell('td', label), ...S.map((s, k) => cell('td', f(s), cols[k][0] === 'Selection')));
+    body.insertRow().append(cell('td', label), ...S.map((s, k) => cell('td', f(s), cols[k])));
   }
 }
 
@@ -767,7 +733,7 @@ function zoomToTurn(tn) {
   setCurrent(tn.i, 'turn');
 }
 
-// ---------- cursor, replay, mark ----------
+// ---------- cursor and replay ----------
 
 function setCurrent(i, source) {
   const { lat, lon } = track;
@@ -810,17 +776,9 @@ function stepPlay(now) {
   requestAnimationFrame(stepPlay);
 }
 
-function setMark(m) {
-  mark = m;
-  markMarker.setLatLng([m.lat, m.lon]);
-  if (!map.hasLayer(markMarker)) markMarker.addTo(map);
-  $('markInput').value = fmtDDM(m.lat, m.lon);
-  recompute();
-}
-
 function recompute() {
   stopPlay();
-  an = analyse(track, settings.smoothS, mark);
+  an = analyse(track, settings.smoothS);
   $('trackName').textContent = `${track.name} · ${fmtDate(track.t[0])}`;
   drawTrack();
   drawPoints();
@@ -836,10 +794,11 @@ function loadGpxText(text, fileName) {
     stopPlay();
     track = buildTrack(parsed, fileName);
     sel = null;
+    pins = [];
     cur = 0;
     $('empty').hidden = true;
-    for (const id of ['play', 'scrub', 'markInput', 'pickMark', 'resetMark']) $(id).disabled = false;
-    setMark({ lat: track.lat[0], lon: track.lon[0] });
+    for (const id of ['play', 'scrub']) $(id).disabled = false;
+    recompute();
     fitMapTo(0, track.n - 1);
     setStatus('');
   } catch (err) {
@@ -863,16 +822,8 @@ $('play').onclick = () => (playing ? stopPlay() : startPlay());
 $('scrub').oninput = e => { const i = +e.target.value; setCurrent(i, 'scrub'); if (playing) playT = track.t[i]; };
 $('smooth').onchange = e => { settings.smoothS = +e.target.value; if (track) recompute(); };
 $('fitSel').onclick = () => { if (sel) fitMapTo(sel[0], sel[1]); };
-$('resetMark').onclick = () => setMark({ lat: track.lat[0], lon: track.lon[0] });
-$('pickMark').onclick = () => {
-  picking = true;
-  map.getContainer().classList.add('picking');
-  setStatus('Click the map to place the mark.');
-};
-$('markInput').onchange = e => {
-  const m = parseCoord(e.target.value);
-  if (m) { setStatus(''); setMark(m); }
-  else { setStatus(`Couldn't read that position. Try 33 51.907'S 018 25.463'E or -33.865, 18.424.`); e.target.value = fmtDDM(mark.lat, mark.lon); }
+$('pin').onclick = () => {
+  if (sel && !pins.some(p => p[0] === sel[0] && p[1] === sel[1])) { pins.push([...sel]); renderStats(); }
 };
 
 (function initTzSelect() {
