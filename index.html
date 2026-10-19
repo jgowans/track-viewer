@@ -60,8 +60,9 @@
 
   .info, .legend { background: rgba(255,255,255,.93); padding: 6px 9px; border-radius: 5px; box-shadow: 0 1px 5px rgba(0,0,0,.3); font-variant-numeric: tabular-nums; }
   .info { line-height: 1.5; min-width: 200px; }
-  .legend canvas { display: block; width: 180px; height: 10px; margin: 3px 0 1px; }
-  .legend .ticks { display: flex; justify-content: space-between; }
+  .legend .classes { display: flex; gap: 3px; margin: 4px 0 2px; }
+  .legend .classes span { flex: 1; min-width: 46px; text-align: center; font-size: 11px; white-space: nowrap; }
+  .legend .classes i { display: block; height: 10px; border: 1px solid #0b1d33; margin-bottom: 2px; }
   .boat svg { width: 22px; height: 22px; display: block; overflow: visible; }
   #drop { position: fixed; inset: 0; background: rgba(15,42,68,.6); color: #fff; font-size: 22px; display: none; align-items: center; justify-content: center; z-index: 5000; pointer-events: none; }
   #drop.show { display: flex; }
@@ -316,13 +317,13 @@ function analyse(tr, smoothS) {
     };
   });
 
-  // Colour scale spans the 2nd-98th percentile of moving speeds so a few spikes don't wash it out.
+  // Five speed classes, each holding about a fifth of the moving fixes, so the colours spread over the
+  // speeds the boat actually sailed. A scale linear in knots put most racing speeds in one colour.
   const moving = Array.from(sog).filter(v => v > 1).sort((x, y) => x - y);
   const pct = p => moving.length ? moving[Math.floor(p * (moving.length - 1))] : 0;
-  const lo = Math.floor(pct(0.02) * 2) / 2;
-  const hi = Math.max(lo + 1, Math.ceil(pct(0.98) * 2) / 2);
+  const breaks = [0.2, 0.4, 0.6, 0.8].map(p => Math.round(pct(p) * 10) / 10);
 
-  return { sog, cog, turns, lo, hi };
+  return { sog, cog, turns, breaks };
 }
 
 function legStats(i0, i1) {
@@ -443,30 +444,23 @@ const legend = L.control({ position: 'bottomright' });
 legend.onAdd = () => { const d = L.DomUtil.create('div', 'legend'); d.hidden = true; return d; };
 legend.addTo(map);
 
-// matplotlib "plasma"; the darkest blue end is skipped because it disappears on blue water.
-const PLASMA = ['#0d0887', '#4c02a1', '#7e03a8', '#a92395', '#cc4778', '#e56b5d', '#f89441', '#fdc328', '#f0f921']
-  .map(h => [1, 3, 5].map(o => parseInt(h.slice(o, o + 2), 16)));
-function speedColor(v) {
-  const f = 0.12 + 0.88 * clamp((v - an.lo) / (an.hi - an.lo), 0, 1);
-  const x = f * (PLASMA.length - 1), i = Math.min(PLASMA.length - 2, Math.floor(x)), r = x - i;
-  const c = PLASMA[i].map((ch, k) => Math.round(ch + (PLASMA[i + 1][k] - ch) * r));
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
-}
+// Slowest to fastest: ColorBrewer RdYlGn. With red-green colour blindness the ends look alike; RdYlBu is the alternative.
+const SPEED_COLORS = ['#d7191c', '#fdae61', '#ffffbf', '#a6d96a', '#1a9641'];
+const speedClass = v => { let c = 0; while (c < an.breaks.length && v >= an.breaks[c]) c++; return c; };
 
 function drawTrack() {
   trackLayer.clearLayers();
-  const { n, lat, lon } = track, BINS = 12;
+  const { n, lat, lon } = track;
   const all = Array.from(lat, (la, i) => [la, lon[i]]);
-  L.polyline(all, { renderer: trackRenderer, color: '#0b1d33', weight: 6, opacity: 0.5, interactive: false }).addTo(trackLayer);
-  // One polyline per run of fixes in the same speed bin, rather than one per GPS segment.
-  const binOf = i => Math.round(clamp((an.sog[i] - an.lo) / (an.hi - an.lo), 0, 1) * (BINS - 1));
+  L.polyline(all, { renderer: trackRenderer, color: '#0b1d33', weight: 8, opacity: 0.6, interactive: false }).addTo(trackLayer);
+  // One polyline per run of fixes in the same speed class, rather than one per GPS segment.
+  const binOf = i => speedClass(an.sog[i]);
   let start = 0, bin = binOf(0);
   for (let i = 1; i < n; i++) {
     const b = binOf(i);
     if (b === bin && i < n - 1) continue;
     L.polyline(all.slice(start, i + 1), {
-      renderer: trackRenderer, color: speedColor(an.lo + (an.hi - an.lo) * bin / (BINS - 1)),
-      weight: 3.5, opacity: 1, interactive: false,
+      renderer: trackRenderer, color: SPEED_COLORS[bin], weight: 5, opacity: 1, interactive: false,
     }).addTo(trackLayer);
     start = i; bin = b;
   }
@@ -491,16 +485,16 @@ function drawSelection() {
   if (!sel) return;
   const pts = [];
   for (let i = sel[0]; i <= sel[1]; i++) pts.push([track.lat[i], track.lon[i]]);
-  L.polyline(pts, { renderer: selRenderer, color: '#ffe14d', weight: 16, opacity: 0.6, interactive: false }).addTo(selLayer);
+  L.polyline(pts, { renderer: selRenderer, color: '#ffffff', weight: 18, opacity: 0.75, interactive: false }).addTo(selLayer);
 }
 
 function updateLegend() {
-  const el = legend.getContainer();
+  const el = legend.getContainer(), b = an.breaks;
+  const labels = [`< ${b[0]}`, ...b.slice(0, -1).map((v, k) => `${v}–${b[k + 1]}`), `≥ ${b[b.length - 1]}`];
   el.hidden = false;
-  el.innerHTML = `<div>SOG, kn <span class="muted">(${settings.smoothS} s)</span></div><canvas width="180" height="10"></canvas>`
-    + `<div class="ticks"><span>≤${an.lo}</span><span>${((an.lo + an.hi) / 2).toFixed(1)}</span><span>≥${an.hi}</span></div>`;
-  const ctx = el.querySelector('canvas').getContext('2d');
-  for (let x = 0; x < 180; x++) { ctx.fillStyle = speedColor(an.lo + (an.hi - an.lo) * x / 179); ctx.fillRect(x, 0, 1, 10); }
+  el.innerHTML = `<div>SOG, kn <span class="muted">(${settings.smoothS} s)</span></div>`
+    + `<div class="classes">${labels.map((l, k) => `<span><i style="background:${SPEED_COLORS[k]}"></i>${l}</span>`).join('')}</div>`
+    + `<div class="muted">Each colour is about a fifth of the time moving.</div>`;
 }
 
 function updateInfo(i) {
